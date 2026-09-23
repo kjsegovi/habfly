@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>HabFly browser contract fixture</title>
+  <style>
+    body { font-family: sans-serif; margin: 20px; }
+    button, input, select { margin: 4px; }
+    svg { display: block; width: 420px; height: 160px; border: 1px solid #555; }
+    [hidden] { display: none !important; }
+    [role=dialog] { position: fixed; inset: 20px; padding: 20px; background: white; border: 2px solid red; }
+  </style>
+</head>
+<body>
+  <h1>Analyze the visible star</h1>
+  <p>Determine its orbital period from the lightcurve.</p>
+  <div hidden><button>Hidden answer key</button><p>Secret answer 999</p><input type="password" aria-label="Hidden password"></div>
+  <div id="collection">
+    <button type="button" id="collect">Collect star</button>
+    <button type="button" id="delete">Delete star</button>
+    <button type="button" disabled>Unavailable star</button>
+  </div>
+  <label>Orbital period <input type="number" id="period" value="3"></label>
+  <label>Time units <select id="units"><option value="d">days</option><option value="y">years</option><option disabled>unavailable unit</option><option hidden>hidden unit</option><optgroup label="Disabled group" disabled><option>group unavailable</option></optgroup></select></label>
+  <label><input type="checkbox" id="habitability"> Potentially habitable</label>
+  <form id="project">
+    <label>Student note <input id="note" value=""></label>
+    <button type="submit">Submit Project</button>
+  </form>
+  <svg role="img" aria-label="lightcurve" viewBox="0 0 420 160" tabindex="0">
+    <text x="10" y="18">Flux versus days</text>
+    <path d="M10 40 L110 40 L120 115 L135 40 L250 40 L260 115 L275 40 L410 40" fill="none" stroke="navy"/>
+    <text x="10" y="150">0</text><text x="140" y="150">3</text><text x="280" y="150">6 days</text>
+  </svg>
+  <div role="tooltip" hidden></div>
+  <div role="status">Ready</div>
+  <nav>
+    <a href="/activity/next">Next activity page</a>
+    <a href="/outside">Leave activity</a>
+    <a href="/activity-escape">Similar path prefix</a>
+    <a href="/outside" target="_blank">Open popup</a>
+  </nav>
+  <button type="button" id="modal-trigger">Show modal</button>
+  <button type="button" id="alert-trigger">Show browser alert</button>
+  <button type="button" id="login-trigger">Show login</button>
+  <button type="button" id="popup-trigger">Open scripted popup</button>
+  <div role="dialog" aria-label="Unexpected modal" hidden><p>Modal content</p></div>
+  <input type="password" aria-label="Sign in password" hidden>
+  <script>
+    const status = document.querySelector('[role="status"]');
+    document.querySelector('#collect').onclick = () => { status.textContent = 'Star collected'; };
+    document.querySelector('#delete').onclick = () => { status.textContent = 'Star deleted'; };
+    document.querySelector('#project').onsubmit = event => {
+      event.preventDefault(); status.textContent = 'Project submitted';
+    };
+    const chart = document.querySelector('svg');
+    const tooltip = document.querySelector('[role="tooltip"]');
+    chart.onmousemove = () => { tooltip.hidden = false; tooltip.textContent = 'Time 3 days; flux 0.96'; };
+    chart.onmouseleave = () => { tooltip.hidden = true; };
+    chart.onwheel = event => { event.preventDefault(); status.textContent = 'Chart zoom changed'; };
+    chart.onmouseup = () => { status.textContent = 'Chart pan changed'; };
+    document.querySelector('#modal-trigger').onclick = () => { document.querySelector('[role="dialog"]').hidden = false; };
+    document.querySelector('#alert-trigger').onclick = () => { alert('Unexpected alert'); };
+    document.querySelector('#login-trigger').onclick = () => { document.querySelector('[aria-label="Sign in password"]').hidden = false; };
+    document.querySelector('#popup-trigger').onclick = () => { window.open('/outside'); };
+  </script>
+</body>
+</html>

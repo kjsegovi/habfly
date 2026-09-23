@@ -1,0 +1,8 @@
+name: mac-smoke
+graph: null
+hidden_size: 8
+epochs: 1
+examples: 16
+seed: 0
+stars: 1
+device: cpu

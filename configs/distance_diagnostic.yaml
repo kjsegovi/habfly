@@ -1,0 +1,12 @@
+name: distance-diagnostic-v1
+graph: data/processed/graphs-v2/graph-2000
+training_cases: 4
+calibration_cases: 2
+development_cases: 2
+unseen_cases: 8
+epochs: 20
+hidden_size: 16
+device: cpu
+threads: 1
+seed: 0
+max_steps: 32

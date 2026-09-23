@@ -1,0 +1,12 @@
+{
+  "url": "http://localhost:4000/REPLACE_WITH_AUTHORIZED_ACTIVITY",
+  "allowed_path": "/REPLACE_WITH_AUTHORIZED_ACTIVITY",
+  "allow_submission": false,
+  "submission_labels": ["Submit Project", "I am ready to submit project"],
+  "completion_text": "Project submitted",
+  "headless": false,
+  "artifact_dir": "experiments/browser",
+  "storage_state": null,
+  "max_steps": 300,
+  "max_seconds": 600
+}

@@ -12,3 +12,13 @@ wheels/
 # data 
 /data/raw/
 /data/processed/
+/data/generated/
+/checkpoints/
+/experiments/
+/tui/target/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+*.storage-state.json
+/configs/browser.local.json
+/configs/spreadsheet.local.json

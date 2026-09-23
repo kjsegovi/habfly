@@ -1,0 +1,8 @@
+{"version":1,"event":"hello","sequence":0,"run_id":null,"payload":{"runtime":"habfly"}}
+{"version":1,"event":"state","sequence":1,"run_id":"fixture-1","payload":{"status":"running","stage":"mini_habworlds","graph":"synthetic-32","checkpoint":null,"seed":12,"browser_status":"simulation","policy":"expert","action_source":"scripted_expert"}}
+{"version":1,"event":"observation","sequence":2,"run_id":"fixture-1","payload":{"instruction":"Analyze star K-12","controls":[{"id":"o1:c1","role":"button","label":"Collect star","value":null,"enabled":true,"options":[]}],"feedback":"Star discovered","progress":{"analyzed":0,"required":1}}}
+{"version":1,"event":"action_proposed","sequence":3,"run_id":"fixture-1","payload":{"kind":"CLICK","target_id":"o1:c1","value":null,"action_confidence":null,"target_confidence":null,"calibrated":false,"action_source":"scripted_expert"}}
+{"version":1,"event":"action_result","sequence":4,"run_id":"fixture-1","payload":{"reward":1.5,"reward_components":{"collected":1.5},"steps":1,"cumulative_reward":1.5,"terminated":false,"truncated":false,"failure_reason":null}}
+{"version":1,"event":"neural_activity","sequence":5,"run_id":"fixture-1","payload":{"activity_source":"untrained_observer","top_neurons":[{"body_id":42,"activity":0.6,"type":"example","class":"sensory","polarity":1}],"groups":{"sensory":{"mean":0.2,"max":0.6},"intrinsic":{"mean":0.15,"max":0.5},"descending":{"mean":0.1,"max":0.4},"efferent":{"mean":0.05,"max":0.3}}}}
+{"version":1,"event":"error","sequence":6,"run_id":"fixture-1","payload":{"message":"fixture warning","recoverable":true}}
+{"version":1,"event":"episode_summary","sequence":7,"run_id":"fixture-1","payload":{"terminated":true,"truncated":false,"stars_completed":1,"cumulative_reward":1.5}}

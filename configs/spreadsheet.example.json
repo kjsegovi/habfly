@@ -1,0 +1,10 @@
+{
+  "spreadsheet_id": "14o_7Dim-0dAghnvMIpn_PZfSmDO8CSO6Vmu9Y_PcqVo",
+  "worksheet": "Sheet1",
+  "credentials_path": "/absolute/private/path/habfly-service-account.json",
+  "expected_formula_fingerprint": null,
+  "expected_headers": {},
+  "requests_per_minute": 40,
+  "retries": 3,
+  "exclusive_worker": true
+}

@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "id": "synthetic-stars-v1",
+  "title": "Synthetic star-analysis sandbox",
+  "synthetic": true,
+  "description": "Engineering fixture only. These fields and simplified formulas are not a verified reconstruction of HabWorlds.",
+  "fields": [
+    {"name": "lifetime", "label": "Lifetime", "formula": "10 / mass ** 2.5", "tolerance": 0.02, "units": ["million years", "billion years"], "expected_unit": "billion years"},
+    {"name": "period", "label": "Orbital period (days)", "formula": "period", "tolerance": 0.02},
+    {"name": "radius", "label": "Planet radius (stellar units)", "formula": "brightness_drop ** 0.5 * stellar_radius", "tolerance": 0.002}
+  ]
+}

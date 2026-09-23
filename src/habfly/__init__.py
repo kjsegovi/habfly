@@ -1,2 +1,3 @@
 def main() -> None:
-    print("Hello from habfly!")
+    from .cli import main as cli_main
+    cli_main()

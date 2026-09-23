@@ -1,0 +1,28 @@
+{
+  "version": 1,
+  "id": "habworlds-stellar-knowledge-v1",
+  "title": "HabWorlds stellar calculation reference",
+  "description": "Permitted tool reference transcribed from the supplied spreadsheet. Arithmetic equivalence is tested; this is not a complete or grading-verified HabWorlds lesson.",
+  "operations": [
+    {"id":"distance","description":"Distance from parallax in arcseconds; returns light-years.","inputs":{"parallax":{"quantity":"parallax","unit":"arcsec"}},"expression":"parsec_to_ly / parallax","constants":{"parsec_to_ly":3.26},"output_unit":"ly","sources":[{"cell":"Sheet1!C2","expression":"=(3.26)/B2"}]},
+    {"id":"luminosity","description":"Luminosity from received flux and distance. Convert light-years to metres, calculate watts, then divide by solar luminosity.","inputs":{"flux":{"quantity":"flux","unit":"W/m2"},"distance":{"quantity":"distance","unit":"ly"}},"expression":"flux * 4 * pi * (distance * metres_per_ly) ** 2 / solar_watts","constants":{"pi":3.141592653589793,"metres_per_ly":9460500000000000,"solar_watts":3.827e26},"output_unit":"Lsun","sources":[{"cell":"Sheet1!D2","expression":"=C2*9460500000000000"},{"cell":"Sheet1!E2","expression":"=A2*4*pi()*(D2^2)"},{"cell":"Sheet1!F2","expression":"=E2/3.827E+26"}]},
+    {"id":"temperature","description":"Temperature in kelvin from peak wavelength in nanometres.","inputs":{"wavelength":{"quantity":"wavelength","unit":"nm"}},"expression":"wien_nm_k / wavelength","constants":{"wien_nm_k":2897768.5},"output_unit":"K","sources":[{"cell":"Sheet1!M2","expression":"=2897768.5/L2"}]},
+    {"id":"mass","description":"Main-sequence stellar mass from luminosity in solar units. Not applicable to giants or white dwarfs.","inputs":{"luminosity":{"quantity":"luminosity","unit":"Lsun"}},"expression":"luminosity ** (1 / exponent)","constants":{"exponent":3.5},"output_unit":"Msun","applicable_classes":["main_sequence"],"sources":[{"cell":"Sheet1!G2","expression":"=F2^(1/3.5)"}]},
+    {"id":"radius","description":"Main-sequence stellar radius from solar luminosity and temperature in kelvin; follows the supplied worksheet's applicability restriction.","inputs":{"luminosity":{"quantity":"luminosity","unit":"Lsun"},"temperature":{"quantity":"temperature","unit":"K"}},"expression":"luminosity ** 0.5 / (temperature / reference_temperature) ** 2","constants":{"reference_temperature":5800},"output_unit":"Rsun","applicable_classes":["main_sequence"],"sources":[{"cell":"Sheet1!H2","expression":"=(F2^(1/2))/((M2/5800)^2)"}]},
+    {"id":"lifetime","description":"Main-sequence stellar lifetime from mass in solar units; returns years, not billions of years.","inputs":{"mass":{"quantity":"mass","unit":"Msun"}},"expression":"reference_years * mass ** (-2.5)","constants":{"reference_years":10000000000},"output_unit":"yr","applicable_classes":["main_sequence"],"sources":[{"cell":"Sheet1!I2","expression":"=10^10*G2^(-2.5)"}]}
+  ],
+  "references": {
+    "measurements":"Flux describes received power per square metre. Parallax is supplied in arcseconds; wavelength is supplied in nanometres.",
+    "solar_units":"Lsun, Msun, and Rsun denote luminosity, mass, and radius relative to the Sun. Preserve the spreadsheet's constants.",
+    "applicability":"The inspected HabWorlds UI restricts stellar mass, radius, and lifetime reconstruction to main-sequence stars. Star class is provided in this pilot.",
+    "completion":"Completing these stellar calculations does not complete a real HabWorlds star or submit the project."
+  },
+  "pending":["H-R classification thresholds and classification learning","Planet detection, orbital and planetary calculations","Habitability and complete lesson decision rules","Browser magnitude-prefix options and grading tolerances"],
+  "provenance": {
+    "spreadsheet_url":"https://docs.google.com/spreadsheets/d/1xr6vbzvlCZRRLpHrgXhzTOL1_tt1rH0Qq4mL-Q-XCPA/edit?gid=0#gid=0",
+    "inspection_date":"2026-09-23",
+    "formula_inventory":"docs/habworlds-spreadsheet-reference.md",
+    "applicability_reference":"docs/habworlds-preview-inspection.md",
+    "status":"source_transcribed; independent arithmetic goldens; course grading unverified"
+  }
+}

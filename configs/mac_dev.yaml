@@ -1,0 +1,8 @@
+name: mac-dev
+graph: data/processed/graphs-v2/graph-2000
+hidden_size: 8
+epochs: 10
+examples: 96
+seed: 0
+stars: 1
+device: cpu

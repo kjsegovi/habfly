@@ -1,0 +1,13 @@
+name: stellar-local-pilot
+task: stellar
+calculation_backend: local
+graph: data/processed/graphs-v2/graph-2000
+dataset: experiments/stellar-local-data-pilot-001
+hidden_size: 16
+epochs: 5
+seed: 0
+device: cpu
+training_episodes: 64
+calibration_episodes: 16
+development_episodes: 16
+test_episodes: 100
