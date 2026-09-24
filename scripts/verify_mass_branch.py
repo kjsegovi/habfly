@@ -34,8 +34,8 @@ def main():
     if args.output.exists():
         parser.error("Use a fresh output directory")
     settings = json.loads(args.profile.read_text())
-    if settings["task"] not in {"mass", "radius"} or settings["calculation_backend"] != "local":
-        parser.error("Only local mass/radius checkpoints are supported")
+    if settings["task"] not in {"mass", "radius", "lifetime"} or settings["calculation_backend"] != "local":
+        parser.error("Only local mass/radius/lifetime checkpoints are supported")
     socket.socket.connect = socket.socket.connect_ex = socket.create_connection = deny
     SpreadsheetAdapter.__init__ = deny
     torch.set_num_threads(1)

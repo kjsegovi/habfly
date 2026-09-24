@@ -47,7 +47,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
             draw_controls(frame, app, sections[1]);
             draw_action(frame, app, sections[2]);
         }
-        frame.render_widget(Paragraph::new("v overview/neural/controls/full observation · ↑/↓ scroll · n step\ns start · space pause/resume · a abort · t save trace · q quit"), rows[2]);
+        frame.render_widget(Paragraph::new(footer(app)), rows[2]);
         return;
     }
     let rows = Layout::vertical([
@@ -84,8 +84,53 @@ pub fn draw(frame: &mut Frame, app: &App) {
         Paragraph::new(timeline).block(Block::bordered().title("Timeline / runtime diagnostics")),
         rows[2],
     );
-    frame.render_widget(Paragraph::new("s start · space pause/resume · p pause · r resume · n step · a abort · t save trace\nv focus panels · ↑/↓ scroll controls · q / Ctrl-C quit · --replay PATH")
-        .style(Style::default().fg(Color::DarkGray)), rows[3]);
+    frame.render_widget(
+        Paragraph::new(footer(app)).style(Style::default().fg(Color::DarkGray)),
+        rows[3],
+    );
+}
+
+fn footer(app: &App) -> String {
+    if app.state["replay"] == true {
+        return "RECORDED REPLAY · space pause/resume · n step · v views · arrows scroll · q quit\nNo browser is connected; recorded confirmations cannot perform writes".into();
+    }
+    if app.state["browser_phase"] == "setting_up" && app.state["browser_execution"] != "autonomous"
+    {
+        return format!(
+            "{}\na abort · q quit · scripted setup only; learned policy remains paused",
+            display(&app.state["browser_guidance"])
+        );
+    }
+    if app.state["browser_held_open"] == true {
+        return format!(
+            "{}\nq close browser and quit · v views · arrows scroll · no actions or retries",
+            display(&app.state["browser_guidance"])
+        );
+    }
+    if app.state["browser_phase"] == "finished" {
+        return format!(
+            "{}\nRun ended · q quit · v views · arrows scroll · no further steps or writes",
+            display(&app.state["browser_guidance"])
+        );
+    }
+    if app.state["browser_execution"] == "autonomous" {
+        let controls = if app.paused {
+            "PAUSED: no automatic steps or writes · r/space resume · n one decision · y approve pending copy"
+        } else {
+            "RUNNING: up to three automatic copies · p/space pause"
+        };
+        return format!(
+            "{}\n{} · a abort · q quit · v views",
+            display(&app.state["browser_guidance"]),
+            controls
+        );
+    }
+    if app.state["browser_phase"].is_string() {
+        format!("{}\nb ready · n step · y approve one copy · a abort · v views · arrows scroll · q quit",
+            display(&app.state["browser_guidance"]))
+    } else {
+        "s start · space pause/resume · p pause · r resume · n step · a abort · t save trace\nv focus panels · ↑/↓ scroll · q / Ctrl-C quit · --replay PATH".into()
+    }
 }
 
 fn option_text(app: &App, option: &serde_json::Value) -> String {
@@ -131,7 +176,7 @@ fn draw_observation(frame: &mut Frame, app: &App, area: Rect) {
         })
         .unwrap_or_default();
     let extra = if calc.get("calculation_mode").is_some() {
-        format!("\nLocal tool: {}\nSupplied class: {} · required fields {}\nOperation: {} · {}\nInputs: {}\nSelected input: {} ← {} · bindings {}\nMeasurements:\n{}\nResults: {}\nCopy: {} → {}\nLast: {}\nTool error: {}\nAnswers: {} · units {}",
+        format!("\nLocal tool: {}\nSupplied class: {} · required fields {}\nOperation: {} · {}\nInputs: {}\nSelected input: {} ← {} · bindings {}\nMeasurements:\n{}\nResults: {}\nCopy: {} → {}\nLast: {}\nTool error: {}\nAnswers: {} · units {}\nBrowser readbacks: {}",
             display(&calc["calculation_mode"]), display(&app.observation["values"]["star_class"]),
             display(&app.observation["values"]["required_fields"]), display(&calc["operation"]),
             display(&calc["reference_card"]["description"]), display(&calc["reference_card"]["inputs"]),
@@ -139,7 +184,8 @@ fn draw_observation(frame: &mut Frame, app: &App, area: Rect) {
             display(&calc["results"]), display(&calc["selected_result"]), display(&calc["destination"]),
             display(&calc["last_operation"]), display(&calc["tool_error"]),
             display(&app.observation["values"]["answers"]),
-            display(&app.observation["values"]["units"]))
+            display(&app.observation["values"]["units"]),
+            display(&app.observation["values"]["numeric_readbacks"]))
     } else if sheet.get("calculation_mode").is_some() {
         format!("\nSheet: {} · generation {}\nInput: {} → {} · bindings {}\nResult: {} → {}\nValues: {}\nLast: {}\nMeasurements: {}\nAnswers: {} · units {}",
             display(&sheet["calculation_mode"]), display(&sheet["generation"]),
@@ -287,6 +333,27 @@ fn draw_controls(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 fn draw_action(frame: &mut Frame, app: &App, area: Rect) {
+    let pending = &app.state["pending_browser_copy"];
+    if pending.is_object() {
+        let authorization =
+            if app.state["browser_execution"] == "autonomous" && app.state["replay"] != true {
+                if app.paused {
+                    "PAUSED: no automatic write; r resumes, y approves once, a aborts"
+                } else {
+                    "AUTONOMOUS: next running tick copies; p pauses, a aborts"
+                }
+            } else {
+                "y approves this copy only; a aborts"
+            };
+        let text = format!("COPY: {} {} → {}\nCurrent value: {} · commit: Tab\n{}\nBrowser probabilities uncalibrated; no Save/score/submit",
+            display(&pending["exact_value"]), display(&pending["unit"]),
+            display(&pending["destination"]), display(&pending["current_value"]), authorization);
+        frame.render_widget(
+            Paragraph::new(text).block(Block::bordered().title("Pending browser write")),
+            area,
+        );
+        return;
+    }
     let text = format!(
         "{} → {} [{}] · value {}\nAction {}\nTarget {}\nSource {} · reward parts {}",
         display(&app.action["kind"]),
@@ -371,6 +438,105 @@ mod tests {
     use super::*;
     use crate::protocol::parse_event;
     use ratatui::{backend::TestBackend, Terminal};
+
+    #[test]
+    fn automatic_setup_does_not_offer_model_steps_or_copy_approval() {
+        let app = App {
+            state: serde_json::json!({"browser_phase":"setting_up",
+                "browser_guidance":"Scripted setup: selecting_visible_star"}),
+            ..App::default()
+        };
+        let text = footer(&app);
+        assert!(text.contains("selecting_visible_star"));
+        assert!(text.contains("learned policy remains paused"));
+        assert!(text.contains("a abort"));
+        assert!(!text.contains("y approve"));
+        assert!(!text.contains("n step"));
+    }
+
+    #[test]
+    fn stopped_setup_keeps_inspection_guidance_without_action_keys() {
+        let app = App {
+            state: serde_json::json!({"browser_phase":"finished", "browser_held_open":true,
+                "browser_guidance":"STOP: setup_capture_frame_count_mismatch:widgets"}),
+            ..App::default()
+        };
+        let text = footer(&app);
+        assert!(text.contains("frame_count_mismatch:widgets"));
+        assert!(text.contains("q close browser"));
+        assert!(!text.contains("y approve"));
+        assert!(!text.contains("n step"));
+    }
+
+    #[test]
+    fn finished_browser_run_does_not_offer_step_or_approval() {
+        let app = App {
+            state: serde_json::json!({"browser_phase":"finished", "browser_held_open":false,
+                "browser_guidance":"STOP: stale_numeric_observation"}),
+            ..App::default()
+        };
+        let text = footer(&app);
+        assert!(text.contains("stale_numeric_observation"));
+        assert!(text.contains("Run ended"));
+        assert!(text.contains("q quit"));
+        assert!(!text.contains("y approve"));
+        assert!(!text.contains("n step"));
+    }
+
+    #[test]
+    fn autonomous_footer_distinguishes_running_paused_and_replay() {
+        let mut app = App {
+            state: serde_json::json!({"browser_execution":"autonomous",
+                "browser_phase":"setting_up", "browser_guidance":"Scripted setup"}),
+            ..App::default()
+        };
+        assert!(footer(&app).contains("RUNNING"));
+        assert!(footer(&app).contains("p/space pause"));
+        assert!(!footer(&app).contains("learned policy remains paused"));
+        app.paused = true;
+        app.state["browser_phase"] = "awaiting_copy".into();
+        assert!(footer(&app).contains("no automatic steps or writes"));
+        app.state["replay"] = true.into();
+        assert!(footer(&app).contains("No browser is connected"));
+        assert!(!footer(&app).contains("AUTONOMOUS"));
+    }
+
+    #[test]
+    fn pending_browser_copy_shows_exact_value_and_separate_approval() {
+        let mut app = App {
+            state: serde_json::json!({"browser_phase":"awaiting_copy",
+                "browser_guidance":"Review before writing",
+                "pending_browser_copy":{"exact_value":"0.0001445975820837288", "unit":"Lsun",
+                    "destination":"luminosity", "current_value":"0"}}),
+            ..App::default()
+        };
+        let mut terminal = Terminal::new(TestBackend::new(120, 10)).unwrap();
+        terminal
+            .draw(|frame| draw_action(frame, &app, frame.area()))
+            .unwrap();
+        let text: String = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        for expected in [
+            "0.0001445975820837288",
+            "luminosity",
+            "Tab",
+            "y approves",
+            "uncalibrated",
+            "no Save/score/submit",
+        ] {
+            assert!(text.contains(expected), "Missing {expected}");
+        }
+        assert!(footer(&app).contains("b ready"));
+        assert!(footer(&app).contains("y approve one copy"));
+        app.state["replay"] = serde_json::json!(true);
+        assert!(footer(&app).contains("RECORDED REPLAY"));
+        assert!(!footer(&app).contains("y approve"));
+    }
 
     #[test]
     fn golden_render_shows_replay_evidence_and_expert_boundary() {
@@ -677,6 +843,42 @@ mod tests {
         ] {
             assert!(text.contains(expected), "Missing {expected}");
         }
+    }
+
+    #[test]
+    fn lifetime_shows_mass_binding_and_years_not_gigayears() {
+        let app = App {
+            focused_panel: 3,
+            observation: serde_json::json!({"instruction":"Main-sequence lifetime", "calculation": {
+                "calculation_mode":"local_tool_assisted", "operation":"lifetime",
+                "reference_card":{"description":"Lifetime from mass; returns years, not billions of years", "inputs":{"mass":{"unit":"Msun"}}},
+                "parameter":"mass", "source":"r4", "bindings":{"mass":"r4"},
+                "results":{"r6":{"kind":"lifetime","value":10000000000.0,"unit":"yr","valid":true}},
+                "selected_result":"r6", "destination":"lifetime", "tool_error":null},
+                "values":{"star_class":"main_sequence", "required_fields":["distance","luminosity","temperature","mass","radius","lifetime"],
+                    "answers":{"lifetime":10000000000.0}, "units":{"lifetime":"yr"}}}),
+            ..App::default()
+        };
+        let mut terminal = Terminal::new(TestBackend::new(150, 45)).unwrap();
+        terminal.draw(|frame| draw(frame, &app)).unwrap();
+        let text: String = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        for expected in [
+            "Supplied class: main_sequence",
+            "returns years, not billions of years",
+            "mass ← r4",
+            "r6 → lifetime",
+            "10000000000",
+            "\"lifetime\":\"yr\"",
+        ] {
+            assert!(text.contains(expected), "Missing {expected}");
+        }
+        assert!(!text.contains("Gyr"));
     }
 
     #[test]

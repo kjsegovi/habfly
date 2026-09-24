@@ -195,6 +195,7 @@ class ConnectomePolicy(nn.Module):
             "structured_tool_v3",
             "structured_tool_v4",
             "structured_tool_v5",
+            "structured_tool_v6",
         ):
             raise ValueError("Unknown observation encoding")
         if selection_mode not in (
@@ -235,7 +236,7 @@ class ConnectomePolicy(nn.Module):
             self.control_projection = nn.Linear(len(CONTROL_LABELS), hidden_size, bias=False)
         if observation_encoding == "structured_tool_v4":
             self.tool_state_projection = nn.Linear(STATE_WIDTH, hidden_size)
-        if observation_encoding == "structured_tool_v5":
+        if observation_encoding in {"structured_tool_v5", "structured_tool_v6"}:
             self.tool_state_projection = nn.Linear(TASK_STATE_WIDTH, hidden_size)
         if selection_mode == "measurement_result_v3":
             self.option_projection = nn.Linear(OPTION_WIDTH, hidden_size, bias=False)
@@ -356,7 +357,12 @@ class ConnectomePolicy(nn.Module):
             raise ValueError("Option text is empty or exceeds a section token budget")
         keys = self.encode_text(texts)
         if self.selection_mode == "measurement_result_v3":
-            features = keys.new_tensor([option_features(obs, option) for option in target["options"]])
+            features = keys.new_tensor(
+                [
+                    option_features(obs, option, years=self.observation_encoding == "structured_tool_v6")
+                    for option in target["options"]
+                ]
+            )
             keys = keys + self.option_projection(features)
         # The option list's order and opaque IDs must not change the query.
         context = self.encode_text(
@@ -521,7 +527,7 @@ class ConnectomePolicy(nn.Module):
         if self.observation_encoding == "structured_tool_v4":
             features = encoded.new_tensor([state_features(as_dict(o)) for o in observations])
             encoded = encoded + self.tool_state_projection(features)
-        if self.observation_encoding == "structured_tool_v5":
+        if self.observation_encoding in {"structured_tool_v5", "structured_tool_v6"}:
             features = encoded.new_tensor([task_state_features(as_dict(o)) for o in observations])
             encoded = encoded + self.tool_state_projection(features)
         state, pooled = self.propagate(encoded, state)

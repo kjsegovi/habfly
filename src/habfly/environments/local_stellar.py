@@ -220,7 +220,7 @@ class LocalStellarEnv(gym.Env):
                     self.fail_tool("stale_source")
                 else:
                     bound = {k: dict(self.sources()[ref]) for k, ref in self.bindings.items()}
-                    result = self.adapter.execute(self.operation, bound, self.case["star_class"])
+                    result = self.calculate(bound)
                     self.last_operation = {
                         "kind": "calculate",
                         "operation": self.operation,
@@ -246,7 +246,7 @@ class LocalStellarEnv(gym.Env):
                 if not result or not result["valid"]:
                     self.fail_tool("stale_result")
                 else:
-                    self.answers[self.destination] = result["value"]
+                    self.copy_result(result)
                     self.metrics["copy_attempts"] += 1
                     self.metrics["copy_correct"] += int(result["kind"] == self.destination)
                     self.last_operation = {
@@ -262,7 +262,7 @@ class LocalStellarEnv(gym.Env):
                 self.metrics["unit_attempts"] += 1
                 self.metrics["unit_correct"] += int(action.value == UNITS[field])
             elif key == "check":
-                correct, _ = grade_fields(self.case, self.answers, self.units)
+                correct, _ = self.grades()
                 components["new_correct_fields"] = len(correct - self.awarded)
                 self.awarded.update(correct)
                 self.completed = len(correct) == len(self.case["required"])
@@ -279,7 +279,7 @@ class LocalStellarEnv(gym.Env):
         self.steps += 1
         if self.steps >= self.max_steps and not self.terminated:
             self.truncated, failure = True, failure or "step_limit"
-        _, grades = grade_fields(self.case, self.answers, self.units)
+        _, grades = self.grades()
         self.metrics.update(grades)
         reward = sum(components.values())
         self.total += reward
@@ -303,6 +303,15 @@ class LocalStellarEnv(gym.Env):
 
     def close(self):
         pass
+
+    def calculate(self, bound):
+        return self.adapter.execute(self.operation, bound, self.case["star_class"])
+
+    def copy_result(self, result):
+        self.answers[self.destination] = result["value"]
+
+    def grades(self):
+        return grade_fields(self.case, self.answers, self.units)
 
     def bind_input(self):
         self.bindings[self.parameter] = self.source

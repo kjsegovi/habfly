@@ -197,7 +197,39 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     };
                     send(&process, &mut app, command, json!({}));
                 }
+                KeyCode::Char('n')
+                    if app.state["browser_execution"] == "autonomous"
+                        && app.state["replay"] != true
+                        && !app.paused =>
+                {
+                    app.log(
+                        "Autonomous decisions run automatically; p pauses before manual stepping.",
+                    );
+                }
                 KeyCode::Char('n') => send(&process, &mut app, CommandKind::Step, json!({})),
+                KeyCode::Char('b')
+                    if app.state["browser_phase"] == "awaiting_ready"
+                        && app.state["replay"] != true =>
+                {
+                    send(
+                        &process,
+                        &mut app,
+                        CommandKind::Step,
+                        json!({"browser_ready":true}),
+                    )
+                }
+                KeyCode::Char('y')
+                    if app.state["browser_phase"] == "awaiting_copy"
+                        && (app.state["browser_execution"] != "autonomous" || app.paused)
+                        && app.state["replay"] != true =>
+                {
+                    send(
+                        &process,
+                        &mut app,
+                        CommandKind::Step,
+                        json!({"approve_copy":true}),
+                    )
+                }
                 KeyCode::Char('a') => send(&process, &mut app, CommandKind::Abort, json!({})),
                 KeyCode::Char('t') => send(
                     &process,

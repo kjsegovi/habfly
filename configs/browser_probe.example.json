@@ -1,0 +1,20 @@
+{
+  "mode": "preview",
+  "url": "http://localhost/authoring/project/habworlds_accessible_version_w/preview_fullscreen/ct9gg_project_diq2o",
+  "allow_submission": false,
+  "frames": [
+    {
+      "name": "simulation",
+      "url": "https://sim.argos.education/habworlds-star-project/1.5.2/index.html",
+      "count": 1,
+      "required_text": ["OBSERVATIONS", "RECONSTRUCTION", "PARALLAX"]
+    },
+    {
+      "name": "score_widgets",
+      "url": "https://sim.argos.education/spr-widget-buttonwidget/4.4.1/index.html",
+      "count": 2
+    }
+  ],
+  "max_text_chars": 40000,
+  "max_controls": 250
+}

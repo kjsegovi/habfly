@@ -13,12 +13,14 @@ evaluate_app = typer.Typer(help="Evaluate model, baselines, simulator, and brows
 spreadsheet_app = typer.Typer(help="Inspect or verify the dedicated Google Sheets working copy")
 knowledge_app = typer.Typer(help="Inspect and independently validate the offline stellar knowledge pack")
 diagnose_app = typer.Typer(help="Bounded local learning diagnostics; not browser acceptance")
+browser_app = typer.Typer(help="Read-only preflight and human-stepped numeric diagnostic; no learned policy")
 app.add_typer(data_app, name="data")
 app.add_typer(train_app, name="train")
 app.add_typer(evaluate_app, name="evaluate")
 app.add_typer(spreadsheet_app, name="spreadsheet")
 app.add_typer(knowledge_app, name="knowledge")
 app.add_typer(diagnose_app, name="diagnose")
+app.add_typer(browser_app, name="browser")
 
 CANONICAL = Path("data/processed/canonical_neurons.feather")
 EDGES = Path("data/raw/connectome-weights-male-cns-v1.0-minconf-0.5.feather")
@@ -32,6 +34,196 @@ def graph_for(path):
     from .data import load_graph, make_demo_graph
 
     return load_graph(path) if path else make_demo_graph()
+
+
+@browser_app.command("inspect")
+def browser_inspect(
+    config: Path, output: Path, url: str | None = None, check: bool = False, new_test_session: bool = False
+):
+    """Open isolated Chromium; capture only after the human selects the activity screen.
+
+    No Firefox profile/cookies are copied and no login state is saved. The human
+    owns any login and navigation. This command never clicks, fills or submits.
+    --check validates configuration without opening a browser or writing files.
+    """
+    import sys
+
+    from .browser import BrowserSafetyStop
+    from .browser_probe import BrowserProbeConfig, capture_interactively, public_url, save_probe
+
+    try:
+        raw = json.loads(config.read_text())
+        if url is not None:
+            raw["url"] = url
+        settings = BrowserProbeConfig.model_validate(raw)
+    except (ValueError, TypeError):
+        # Pydantic's default error includes input values, possibly a pasted secret URL.
+        raise typer.BadParameter(
+            "Invalid probe configuration: use a credential-free loopback URL, "
+            "only a pinned preview_sequence_id query, and explicit HTTP(S) frame URLs"
+        ) from None
+    if check:
+        emit({"valid": True, "url": public_url(settings.url), "mode": "read_only_browser_preflight"})
+        return
+    if output.exists():
+        raise typer.BadParameter("Output already exists; choose a new inspection directory")
+    if not sys.stdin.isatty():
+        raise typer.BadParameter("Run in an interactive terminal; capture requires a human checkpoint")
+    from playwright.sync_api import Error as PlaywrightError
+    from playwright.sync_api import sync_playwright
+
+    try:
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(headless=False)
+            context = browser.new_context()
+            try:
+                page = context.new_page()
+                page.goto(settings.url, wait_until="domcontentloaded", timeout=30000)
+                if new_test_session:
+                    typer.echo(
+                        "Independent Chromium test session: leave the Firefox attempt alone. "
+                        "You may manually select/collect ONE star here and open View Star Data. "
+                        "It does not need to be the Firefox star. This is setup, not learned behavior."
+                    )
+                else:
+                    typer.echo(
+                        "Existing-state capture: Chromium does not share Firefox's attempt state. "
+                        "If the intended star is absent, cancel; do not collect a replacement. "
+                        "Use --new-test-session only for an explicitly separate test setup."
+                    )
+                typer.echo(
+                    "In Chromium, sign in if needed and navigate to the selected star's stellar tab. "
+                    "Do not reset, edit answers, assess, update score or submit. "
+                    "Close help panels before capture. This probe performs no UI actions; "
+                    "the site's own autosave may still run. No browser trace or credentials are saved."
+                )
+                report = capture_interactively(
+                    page, settings, confirm=typer.confirm, echo=typer.echo, new_test_session=new_test_session
+                )
+                if report is None:
+                    raise typer.Abort()
+                manifest = save_probe(report, output)
+                emit({"output": str(output), **manifest})
+            finally:
+                context.close()
+                browser.close()
+    except (BrowserSafetyStop, PlaywrightError) as exc:
+        # Playwright messages can include full session URLs; do not echo them.
+        reason = str(exc) if isinstance(exc, BrowserSafetyStop) else type(exc).__name__
+        typer.echo(f"No capture saved: {reason}", err=True)
+        raise typer.Exit(1) from None
+
+
+@browser_app.command("map-stellar")
+def browser_map_stellar(capture: Path, output: Path):
+    """Map a hashed saved capture offline. No model, browser, answers, or training."""
+    from .browser_stellar import StellarMappingError, load_and_map_capture, save_mapping
+
+    try:
+        mapping = load_and_map_capture(capture)
+        save_mapping(mapping, output)
+    except (StellarMappingError, OSError, ValueError, KeyError, TypeError) as exc:
+        reason = str(exc) if isinstance(exc, StellarMappingError) else type(exc).__name__
+        typer.echo(f"No mapping saved: {reason}", err=True)
+        raise typer.Exit(1) from None
+    emit(
+        {
+            "output": str(output),
+            "star": mapping["star_name"],
+            "capture_sha256": mapping["capture_sha256"],
+            "browser_acceptance_passed": False,
+        }
+    )
+
+
+@browser_app.command("test-numeric")
+def browser_test_numeric(
+    config: Path, output: Path, url: str | None = None, check: bool = False, new_test_session: bool = False
+):
+    """Confirm up to three numeric writes in a SEPARATE Chromium test attempt.
+
+    Human-selected local calculations, not learned inference or star completion.
+    Each confirmed fill includes Tab and a separate committed-display check.
+    Never clicks Save/Assess/Update Score/Submit. Native input may trigger autosave.
+    --check is offline and read-only. Requires --new-test-session for live use.
+    """
+    import sys
+
+    from .browser import BrowserSafetyStop
+    from .browser_probe import BrowserProbeConfig, capture_interactively, public_url
+    from .browser_stellar import SIMULATION_URL
+
+    try:
+        raw = json.loads(config.read_text())
+        if url is not None:
+            raw["url"] = url
+        settings = BrowserProbeConfig.model_validate(raw)
+        if len([f for f in settings.frames if f.url == SIMULATION_URL and f.count == 1]) != 1:
+            raise ValueError("Required stellar frame missing")
+    except (OSError, ValueError, TypeError):
+        raise typer.BadParameter(
+            "Invalid numeric diagnostic config; use the stellar probe config and a plain loopback preview URL"
+        ) from None
+    if check:
+        emit(
+            {
+                "valid": True,
+                "url": public_url(settings.url),
+                "mode": "human_stepped_numeric_diagnostic",
+                "max_writes": 3,
+                "learned_policy": False,
+            }
+        )
+        return
+    if not new_test_session:
+        raise typer.BadParameter("Requires --new-test-session; do not use the preserved Firefox attempt")
+    if output.exists():
+        raise typer.BadParameter("Output already exists; choose a new diagnostic directory")
+    if not sys.stdin.isatty():
+        raise typer.BadParameter("Run in an interactive terminal; every write requires confirmation")
+
+    from playwright.sync_api import Error as PlaywrightError
+    from playwright.sync_api import sync_playwright
+
+    from .browser_numeric import run_numeric_diagnostic
+
+    try:
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(headless=False)
+            context = browser.new_context()
+            try:
+                page = context.new_page()
+                page.goto(settings.url, wait_until="domcontentloaded", timeout=30000)
+                typer.echo(
+                    "Independent Chromium numeric TEST: leave Firefox unchanged. Sign in if needed, "
+                    "return to the ORIGINAL --url, manually select/collect ONE star, and open its stellar tab. "
+                    "Close help panels. Do not choose a class/color, save, assess, update score or submit. "
+                    "This session can change three numeric answers after confirmation, then uses Tab to verify each displayed value; the site may autosave. "
+                    "No profiles, credentials, screenshots or browser traces are saved."
+                )
+                ready = capture_interactively(
+                    page, settings, confirm=typer.confirm, echo=typer.echo, new_test_session=True
+                )
+                if ready is None:
+                    raise typer.Abort()
+                report = run_numeric_diagnostic(
+                    page, settings, output, prompt=typer.prompt, confirm=typer.confirm, echo=typer.echo
+                )
+                emit({"output": str(output), **report})
+                typer.prompt(
+                    "Inspect the test window without saving/scoring. Press Enter to close Chromium",
+                    default="",
+                    show_default=False,
+                )
+                if report["outcome"] not in {"numeric_transport_verified", "cancelled"}:
+                    raise typer.Exit(1)
+            finally:
+                context.close()
+                browser.close()
+    except (BrowserSafetyStop, PlaywrightError) as exc:
+        reason = str(exc) if isinstance(exc, BrowserSafetyStop) else "browser_operation_failed"
+        typer.echo(f"Stopped: {reason}. No automatic retry. Check any saved diagnostic evidence.", err=True)
+        raise typer.Exit(1) from None
 
 
 @diagnose_app.command("distance")

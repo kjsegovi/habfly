@@ -46,15 +46,55 @@ def read(path):
     return json.loads(Path(path).read_text())
 
 
+def set_workflow_trainable(policy, mode):
+    if mode not in {"workflow", "options"}:
+        raise ValueError("Unknown workflow training components")
+    prefixes = (
+        (
+            "tool_state_projection.",
+            "control_projection.",
+            "option_projection.",
+            "option_query.",
+            "cell.",
+            "norm.",
+            "sensory_projection.",
+            "feature_projection.",
+            "action_head.",
+            "target_query.",
+            "value_head.",
+        )
+        if mode == "workflow"
+        else ("option_projection.", "option_query.")
+    )
+    for name, parameter in policy.named_parameters():
+        parameter.requires_grad_(name.startswith(prefixes))
+    return prefixes
+
+
+def cycle_loss_summary(losses, cases):
+    """Report all branches, not only the last (often easier) episode in a cycle."""
+    start = max(0, len(losses) - len(cases))
+    pairs = [(cases[i % len(cases)]["star_class"], losses[i]) for i in range(start, len(losses))]
+    return {
+        "mean_loss_last_cycle": sum(v for _, v in pairs) / len(pairs),
+        "mean_loss_by_class_last_cycle": {
+            cls: sum(v for c, v in pairs if c == cls) / sum(c == cls for c, _ in pairs)
+            for cls in sorted({c for c, _ in pairs})
+        },
+    }
+
+
 def recognition_records(seed, *, task="luminosity"):
     rng, records = random.Random(seed), []
     quantities, units = ("parallax", "flux", "wavelength", "distance"), ("arcsec", "W/m2", "nm", "ly")
-    if task in {"temperature", "mass", "radius"}:
+    if task in {"temperature", "mass", "radius", "lifetime"}:
         quantities, units = (*quantities, "luminosity"), (*units, "Lsun")
-    if task in {"mass", "radius"}:
+    if task in {"mass", "radius", "lifetime"}:
         quantities, units = (*quantities, "temperature"), (*units, "K")
-    if task == "radius":
+    if task in {"radius", "lifetime"}:
         quantities, units = (*quantities, "mass"), (*units, "Msun")
+    if task == "lifetime":
+        quantities, units = (*quantities, "radius"), (*units, "Rsun")
     fields = list(
         itertools.product(
             quantities,
@@ -106,6 +146,8 @@ def train(args, graph, calculator):
         raise ValueError("One invocation is capped at 800 full-sequence optimizer updates")
     if not 0 <= args.recognition_updates <= 200:
         raise ValueError("Recognition is capped at 200 optimizer updates")
+    if args.train_components == "options" and args.recognition_updates:
+        raise ValueError("Option-only refinement must keep recognition frozen")
     parent_content = read(args.parent.parent.parent / "report.json")["content"]
     parent, _ = load_checkpoint(args.parent, graph, content_pack=parent_content)
     if (
@@ -127,7 +169,7 @@ def train(args, graph, calculator):
             "control_encoding": args.control_encoding,
         },
     )
-    if args.observation_encoding == "structured_tool_v5":
+    if args.observation_encoding in {"structured_tool_v5", "structured_tool_v6"}:
         from habfly.training.task_state import migrate_task_state
 
         migrate_task_state(parent, policy)
@@ -182,6 +224,7 @@ def train(args, graph, calculator):
                 "seed": 0,
                 "cpu_threads": 1,
                 "ppo": False,
+                "train_components": args.train_components,
             },
             "runner_sha256": file_hash(__file__),
             "test_status": "sealed_until_separate_evaluation",
@@ -233,21 +276,12 @@ def train(args, graph, calculator):
     if not args.recognition_updates and recognition["accuracy"]["exact"] != 1:
         raise ValueError("Skipping recognition requires a perfect frozen recognition check")
     print(f"Recognition: {recognition['accuracy']}", flush=True)
-    trainable = (
-        "tool_state_projection.",
-        "control_projection.",
-        "option_projection.",
-        "option_query.",
-        "cell.",
-        "norm.",
-        "sensory_projection.",
-        "feature_projection.",
-        "action_head.",
-        "target_query.",
-        "value_head.",
-    )
-    for name, parameter in policy.named_parameters():
-        parameter.requires_grad_(name.startswith(trainable))
+    trainable = set_workflow_trainable(policy, args.train_components)
+    frozen = {
+        name: parameter.detach().clone()
+        for name, parameter in policy.named_parameters()
+        if not parameter.requires_grad
+    }
     optimizer = torch.optim.AdamW([p for p in policy.parameters() if p.requires_grad], lr=0.003)
     examples = [episodes_to_examples([episode]) for episode in episodes["train"]]
     losses = []
@@ -272,6 +306,7 @@ def train(args, graph, calculator):
                     "update": update + 1,
                     "cap": args.updates,
                     "loss": losses[-1],
+                    **cycle_loss_summary(losses, cases["train"]),
                     "seconds": time.perf_counter() - started,
                 }
                 write_json(args.output / "status.json", row)
@@ -283,6 +318,17 @@ def train(args, graph, calculator):
             if s != "calibration"
         }
     # Calibration is separate, does not change greedy decisions or train weights.
+    if any(not torch.equal(value, dict(policy.named_parameters())[name]) for name, value in frozen.items()):
+        raise RuntimeError("Frozen parameters changed during workflow fitting")
+    write_json(
+        args.output / "frozen-workflow-components.json",
+        {
+            "train_components": args.train_components,
+            "trainable_prefixes": list(trainable),
+            "unchanged_frozen_parameter_names": list(frozen),
+            "frozen_parameters_unchanged": True,
+        },
+    )
     policy.requires_grad_(False)
     calibrate_policy(
         policy,
@@ -433,13 +479,21 @@ def main(default_task="luminosity"):
     parser.add_argument("mode", choices=("train", "evaluate"))
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument(
-        "--task", choices=("luminosity", "temperature", "mass", "radius"), default=default_task
+        "--task", choices=("luminosity", "temperature", "mass", "radius", "lifetime"), default=default_task
     )
     parser.add_argument("--parent", type=Path)
     parser.add_argument("--updates", type=int, default=400)
     parser.add_argument("--recognition-updates", type=int, default=200)
+    parser.add_argument(
+        "--train-components",
+        choices=("workflow", "options"),
+        default="workflow",
+        help="Options freezes the recurrent core and all other heads; recognition updates must be zero",
+    )
     parser.add_argument("--offset", type=int, default=0)
-    parser.add_argument("--observation-encoding", choices=("structured_tool_v4", "structured_tool_v5"))
+    parser.add_argument(
+        "--observation-encoding", choices=("structured_tool_v4", "structured_tool_v5", "structured_tool_v6")
+    )
     parser.add_argument(
         "--control-encoding",
         choices=("characters", "semantic_tool_v1"),
@@ -449,7 +503,11 @@ def main(default_task="luminosity"):
     args = parser.parse_args()
     args.parent = args.parent or workflow_spec(args.task).parent
     args.observation_encoding = args.observation_encoding or (
-        "structured_tool_v5" if args.task in {"mass", "radius"} else "structured_tool_v4"
+        "structured_tool_v6"
+        if args.task == "lifetime"
+        else "structured_tool_v5"
+        if args.task in {"mass", "radius"}
+        else "structured_tool_v4"
     )
     socket.socket = socket.create_connection = deny
     SpreadsheetAdapter.__init__ = deny

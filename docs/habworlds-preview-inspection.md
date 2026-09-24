@@ -2,6 +2,13 @@
 
 Inspection date: 2026-09-23. Status: requirements discovery, not a browser acceptance run.
 
+Follow-up on 2026-09-24: the existing CRABILTIA attempt was re-inspected without
+answer edits. Exact HTTPS frame URLs are now verified through Firefox Frame Info;
+the local read-only Chromium probe and the remaining stellar bridge/classification
+gates are documented in [stellar browser preflight](browser-stellar-preflight.md).
+Earlier unverified implementation items below remain pending unless that follow-up
+explicitly supersedes them.
+
 ## Evidence and boundary
 
 Inspected the user's Firefox Project preview through its visible UI and accessibility tree. Navigated introductory screens, the starfield/list views, three analysis tables, instructions, and the assessment menu. No answers entered, stars deleted, funds spent, score updated, or project submitted by the inspection.

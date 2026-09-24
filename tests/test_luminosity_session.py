@@ -11,7 +11,7 @@ from habfly.training.luminosity_session import load_chain_session
 from habfly.training.stellar import write_json
 
 
-@pytest.fixture(params=("luminosity", "temperature", "mass", "radius"))
+@pytest.fixture(params=("luminosity", "temperature", "mass", "radius", "lifetime"))
 def session(tmp_path, request):
     pack = load_knowledge_pack()
     workflow = workflow_spec(request.param)
@@ -63,6 +63,7 @@ def session(tmp_path, request):
                         "completed": n,
                         "mass_applicability_correct": n,
                         "radius_applicability_correct": n,
+                        "lifetime_applicability_correct": n,
                     }
                     for cls, n in (("main_sequence", 50), ("white_dwarf", 25), ("giant", 25))
                 },
@@ -117,7 +118,7 @@ def test_reject_unready_chain(session, mutation):
 
 def test_mass_branch_promotion_guard(session):
     directory, checkpoint, pack, cases, loader = session
-    if loader.keywords["task"] not in {"mass", "radius"}:
+    if loader.keywords["task"] not in {"mass", "radius", "lifetime"}:
         pytest.skip("Conditional-calculation applicability guard")
     path = directory / "final/report.json"
     final = json.loads(path.read_text())
@@ -129,11 +130,23 @@ def test_mass_branch_promotion_guard(session):
 
 def test_radius_branch_promotion_guard(session):
     directory, checkpoint, pack, cases, loader = session
-    if loader.keywords["task"] != "radius":
+    if loader.keywords["task"] not in {"radius", "lifetime"}:
         pytest.skip("Radius-specific applicability guard")
     path = directory / "final/report.json"
     final = json.loads(path.read_text())
     final["closed_loop"]["by_class"]["giant"].pop("radius_applicability_correct")
+    write_json(path, final)
+    with pytest.raises(ValueError, match="every supplied class"):
+        loader(directory, checkpoint, pack, cases[0]["seed"])
+
+
+def test_lifetime_branch_promotion_guard(session):
+    directory, checkpoint, pack, cases, loader = session
+    if loader.keywords["task"] != "lifetime":
+        pytest.skip("Lifetime-specific applicability guard")
+    path = directory / "final/report.json"
+    final = json.loads(path.read_text())
+    final["closed_loop"]["by_class"]["giant"].pop("lifetime_applicability_correct")
     write_json(path, final)
     with pytest.raises(ValueError, match="every supplied class"):
         loader(directory, checkpoint, pack, cases[0]["seed"])

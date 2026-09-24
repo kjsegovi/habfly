@@ -15,6 +15,7 @@ ERRORS = ("invalid_actions", "tool_errors", "api_failures", "infrastructure_fail
 def audit_chain(case, trajectory):
     reused = correct_flux = correct_wavelength = exact_copy = mass_reused = mass_attempts = 0
     radius_reused = radius_attempts = 0
+    lifetime_reused = lifetime_attempts = 0
     selections, correct = Counter(), Counter()
     for step in trajectory:
         before, action, after = step["observation"], step["action"], step["result"]["observation"]
@@ -22,6 +23,17 @@ def audit_chain(case, trajectory):
         key = control.get("id", "").partition(":")[2]
         state = after["calculation"]
         sources = visible_sources(after)
+        if key == "operation" and action["value"] == "lifetime":
+            lifetime_attempts += 1
+        if key == "execute" and state["operation"] == "lifetime" and not state["tool_error"]:
+            mass = state["bindings"].get("mass")
+            result = sources.get(mass, {})
+            lifetime_reused += int(
+                mass in before["calculation"]["results"]
+                and result.get("kind") == "mass"
+                and result.get("unit") == "Msun"
+                and result.get("source") == "current star"
+            )
         if key == "operation" and action["value"] == "radius":
             radius_attempts += 1
         if key == "execute" and state["operation"] == "radius" and not state["tool_error"]:
@@ -94,6 +106,8 @@ def audit_chain(case, trajectory):
         "mass_operation_selections": mass_attempts,
         "radius_result_pair_reuses": radius_reused,
         "radius_operation_selections": radius_attempts,
+        "lifetime_mass_reuses": lifetime_reused,
+        "lifetime_operation_selections": lifetime_attempts,
         "selection_attempts": dict(selections),
         "selection_correct": dict(correct),
     }
@@ -124,6 +138,11 @@ def rollout(policy, calculator, cases, directory, *, environment=LuminosityEnv):
             if "radius" in case["required"]
             else summary.get("radius_operation_selections") == 0
         )
+        summary["lifetime_applicability_correct"] = (
+            summary.get("lifetime_mass_reuses") == 1 and summary.get("lifetime_operation_selections") == 1
+            if "lifetime" in case["required"]
+            else summary.get("lifetime_operation_selections") == 0
+        )
         episodes.append(summary)
     attempts, correct = Counter(), Counter()
     for row in episodes:
@@ -142,6 +161,7 @@ def rollout(policy, calculator, cases, directory, *, environment=LuminosityEnv):
             and ("temperature" not in e["required_fields"] or e.get("current_star_wavelength_uses") == 1)
             and e["mass_applicability_correct"]
             and e["radius_applicability_correct"]
+            and e["lifetime_applicability_correct"]
             for e in episodes
         ),
     }
@@ -154,6 +174,9 @@ def rollout(policy, calculator, cases, directory, *, environment=LuminosityEnv):
             ),
             "radius_applicability_correct": sum(
                 e["star_class"] == cls and e["radius_applicability_correct"] for e in episodes
+            ),
+            "lifetime_applicability_correct": sum(
+                e["star_class"] == cls and e["lifetime_applicability_correct"] for e in episodes
             ),
         }
         for cls in sorted({e["star_class"] for e in episodes})

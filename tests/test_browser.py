@@ -251,6 +251,18 @@ def test_explicit_submission_permission_allows_synthetic_acceptance(adapter_fact
         assert result.observation.progress["submitted"] is True
 
 
+@pytest.mark.parametrize("label", ["SUBMIT PROJECT.", "I am ready to submit project."])
+def test_submission_punctuation_does_not_bypass_guard(adapter_factory, label):
+    with adapter_factory() as adapter:
+        adapter.page.get_by_role("button", name="Submit Project", exact=True).evaluate(
+            "(node, text) => node.textContent = text", label
+        )
+        adapter.observation = adapter.observe()
+        result = adapter.step(action(adapter, label))
+        assert result.failure_reason == "submission_disabled"
+        assert adapter.page.get_by_role("status").inner_text() == "Ready"
+
+
 def test_non_submission_keypress_remains_available(adapter_factory):
     with adapter_factory() as adapter:
         result = adapter.step(action(adapter, "Student note", ActionKind.KEYPRESS, value="Tab"))

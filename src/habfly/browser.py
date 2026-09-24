@@ -3,6 +3,7 @@
 import hashlib
 import json
 import logging
+import re
 import time
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
@@ -13,6 +14,11 @@ from pydantic import Field, model_validator
 from .contracts import Action, ActionKind, Contract, Control, Observation, StepResult, validate_action
 
 logger = logging.getLogger(__name__)
+
+
+def normalized_control_label(label: str) -> str:
+    """Normalize visible punctuation/spacing, never substring-match a final action."""
+    return " ".join(re.findall(r"\w+", label.casefold()))
 
 
 def _activity_path(path):
@@ -304,13 +310,13 @@ class TorusBrowser:
                 raise BrowserSafetyStop("stale_page_observation")
             control = validate_action(before, action)
             if not self.config.allow_submission:
-                final = {label.casefold() for label in self.config.submission_labels}
+                final = {normalized_control_label(label) for label in self.config.submission_labels}
                 if control and (
-                    control.label.casefold() in final
+                    normalized_control_label(control.label) in final
                     or (
                         action.kind == ActionKind.KEYPRESS
                         and action.value == "Enter"
-                        and any(c.label.casefold() in final for c in before.controls)
+                        and any(normalized_control_label(c.label) in final for c in before.controls)
                     )
                 ):
                     raise BrowserSafetyStop("submission_disabled")

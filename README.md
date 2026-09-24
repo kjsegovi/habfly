@@ -2,11 +2,66 @@
 
 A local connectome-constrained learning experiment, with a Python/PyTorch engine and a Rust terminal interface. Develop on the Mac, train larger graphs on the Framework, and watch decisions and recurrent neuron activity beside a Playwright-controlled browser.
 
-The default runnable demo uses an explicitly **synthetic star-analysis environment**. Its scripted expert completes one, three, or 30 stars. A separate **learned distance-only checkpoint** now passes 100/100 held-out local tasks and is ready for a [manual TUI trial](docs/distance-manual-test.md). Neither demo establishes learned completion of the actual HabWorlds Project.
+The default runnable demo uses an explicitly **synthetic star-analysis environment**. Its scripted expert completes one, three, or 30 stars. The separate **learned six-calculation stellar checkpoint** passes 100/100 held-out local tasks with supplied classifications and is ready for a [manual TUI trial](docs/lifetime-manual-test.md). Neither demo establishes learned completion of the actual HabWorlds Project.
+
+The browser checkpoints start with a [read-only stellar preflight](docs/browser-stellar-preflight.md):
+`habfly browser inspect` inventories visible, allowlisted frames in isolated Chromium.
+It does not run the policy or change answers. Classification and saved/graded
+star completion remain separate gates.
+The first managed capture, ALTHINAGON, now has a tested
+[offline stellar field map](docs/browser-stellar-mapping.md). A separate
+[human-stepped numeric diagnostic](docs/browser-numeric-test.md),
+`habfly browser test-numeric`, can confirm up to three numeric writes in an
+independent Chromium test attempt. It uses current visible labels, explicit
+per-write confirmation, exact input readback and a separately checked post-Tab
+display (full-precision tool results are retained). It does not run the learned policy,
+assume a class, Save, score or submit. The human-stepped Ilnidel run verified all
+three numeric fields (`experiments/browser-numeric-003`), not star completion.
+
+The [supervised learned browser diagnostic](docs/browser-learned-tui.md) now uses
+the frozen three-field checkpoint and the verified transport. Launch
+`.venv/bin/python scripts/browser_tui.py` after setting `HABFLY_PREVIEW_URL`.
+It starts paused in a fresh Chromium context: **b** captures the ready star,
+**n** advances one learned decision, **y** confirms one proposed exact copy + Tab,
+and **q** quits. Supervised mode never resumes or writes automatically.
+Add `--auto-setup` to script local login (hidden password prompt), introduction,
+and visible-star selection; the TUI then captures the Stellar screen and stays
+paused for **n**. Setup is deterministic, not part of learning. Credentials and
+login screens are not recorded; Firefox is untouched.
+The supervised live Devaem run completed all 31 learned decisions and three
+verified numeric writes (`c9dbdac18d8d491bb3336d309832162e`), including automatic
+setup and the final local transport check. This does not establish grading or persistence.
+
+Explicit `--autonomous` now enables setup, learned decisions and the three copies
+without **n/y**. The TUI supports pause/resume/abort between actions. To run a
+bounded sequential reliability batch with visible Chromium and console progress:
+
+```sh
+.venv/bin/python scripts/browser_tui.py --autonomous --runs 3 --output experiments/browser-reliability-001
+```
+
+The batch stops on the first failure, records every run plus `report.json`, and
+reports duplicate stars. Fresh browser contexts are not newly provisioned accounts.
+There is no retraining, Save, spending, deletion, assessment, score update or submission.
+Autonomous execution is fixture-tested; its live reliability gate remains separate.
 
 ## Try the learned local checkpoints
 
-The newest checkpoint adds **main-sequence radius** to distance, luminosity,
+The newest checkpoint adds **main-sequence lifetime**, completing all six local
+stellar calculations. It passed **100/100 new held-out tasks**: main-sequence
+stars reuse calculated mass for lifetime in years; supplied giant/white-dwarf
+classes skip mass, radius and lifetime. Classification itself is not learned.
+
+```sh
+.venv/bin/python scripts/lifetime_tui.py
+```
+
+See the [lifetime manual guide](docs/lifetime-manual-test.md) for the 60-action
+six-calculation path, 31-action skip path, exact values, preserved failed runs,
+dropdown-only refinement and replay. This is local tool-assisted learning, not
+actual HabWorlds completion.
+
+The preserved radius checkpoint adds **main-sequence radius** to distance, luminosity,
 temperature and mass. It passed **100/100 new held-out local tasks**, reusing both
 luminosity and temperature for radius. Supplied giant/white-dwarf classes skip
 mass and radius; classification itself is not learned. Start the paused TUI with:
@@ -132,9 +187,9 @@ tool/expert gates but **0/100 learned task completions**. The later pilot comple
 **0/16 development cases**. Subsequent [distance-only investigations](docs/distance-diagnostic.md)
 now produce a checkpoint completing **100/100 new distance cases**. This does not
 change those earlier full-task failures. Use the [learned distance TUI guide](docs/distance-manual-test.md)
-for the distance checkpoint, or the [radius TUI guide](docs/radius-manual-test.md)
-for the latest conditional five-calculation checkpoint. Full-task training and
-browser acceptance remain later gates.
+for the distance checkpoint, or the [lifetime TUI guide](docs/lifetime-manual-test.md)
+for the latest conditional six-calculation checkpoint. Classification, planet
+analysis, habitability and browser acceptance remain later gates.
 
 [Google Sheets stellar training](docs/stellar-training.md) remains an optional,
 explicit backend with separate datasets/checkpoints and no local fallback. Neither
@@ -198,7 +253,11 @@ The browser adapter operates through ordinary UI actions, reads visible text/con
   configs/verified-content.json
 ```
 
-The browser integration has been tested against local synthetic HTML fixtures; it has not been tested against the actual HabWorlds lesson. Browser runs save observations, actions, chart crops, failure screenshots, and Playwright traces. Keep those local because they may contain course data.
+This generic full-workflow adapter is fixture-tested, not verified for live lesson completion.
+It is distinct from the bounded three-field diagnostic above. Generic runs save
+observations, actions, chart crops, failure screenshots, and Playwright traces.
+The three-field diagnostic saves visible captures, numeric receipts, failure-state
+diffs and JSONL events, without browser traces or credentials. Keep all artifacts local.
 
 ## Runtime and verification
 

@@ -16,6 +16,9 @@ QUANTITIES = (
     "lifetime",
 )
 UNITS = ("arcsec", "W/m2", "nm", "ly", "Lsun", "K", "Msun", "Rsun", "Gyr")
+# Keep the historical vocabulary intact for v4/v5 checkpoints. v6 describes
+# the knowledge pack's actual output; it does not convert years into Gyr.
+YEAR_UNITS = (*UNITS[:-1], "yr")
 STATE_WIDTH = len(QUANTITIES) * 10 + 4
 STAR_CLASSES = ("main_sequence", "white_dwarf", "giant")
 TASK_STATE_WIDTH = STATE_WIDTH + len(QUANTITIES) + len(STAR_CLASSES)
@@ -89,11 +92,11 @@ def state_features(observation):
     ]
 
 
-def option_features(observation, option):
+def option_features(observation, option, *, years=False):
     metadata = visible_sources(observation).get(option, {})
     kind = metadata.get("kind", option)
     unit = metadata.get("unit", option)
-    return [kind == q for q in QUANTITIES] + [unit == u for u in UNITS]
+    return [kind == q for q in QUANTITIES] + [unit == u for u in (YEAR_UNITS if years else UNITS)]
 
 
 def task_state_features(observation):

@@ -71,6 +71,9 @@ impl App {
     pub fn apply(&mut self, event: RuntimeEvent) {
         let payload = event.payload;
         if event.run_id != self.run_id && event.run_id.is_some() {
+            // Pending browser approvals and replay flags belong to one run only.
+            self.state = json!({});
+            self.paused = false;
             self.observation = json!({});
             self.action = json!({});
             self.action_control = json!({});
@@ -226,6 +229,17 @@ pub fn confidence(action: &Value, field: &str) -> String {
 mod tests {
     use super::*;
     use crate::protocol::parse_event;
+
+    #[test]
+    fn browser_approval_state_cannot_leak_into_another_run() {
+        let mut app = App::default();
+        app.apply(parse_event(r#"{"version":1,"sequence":0,"run_id":"browser","event":"state","payload":{"status":"paused","browser_phase":"awaiting_copy","pending_browser_copy":{"exact_value":"12"}}}"#).unwrap());
+        assert!(app.paused);
+        app.apply(parse_event(r#"{"version":1,"sequence":1,"run_id":"local","event":"state","payload":{"status":"running"}}"#).unwrap());
+        assert!(app.state["browser_phase"].is_null());
+        assert!(app.state["pending_browser_copy"].is_null());
+        assert!(!app.paused);
+    }
 
     #[test]
     fn golden_stream_retains_actions_rewards_and_telemetry() {

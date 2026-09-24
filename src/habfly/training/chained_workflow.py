@@ -4,6 +4,9 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
+from habfly.environments.lifetime import SCOPE as LIFETIME_SCOPE
+from habfly.environments.lifetime import LifetimeEnv, lifetime_cases
+from habfly.environments.lifetime import required_fields as lifetime_required_fields
 from habfly.environments.luminosity import MAX_STEPS, SCOPE, LuminosityEnv, luminosity_cases
 from habfly.environments.mass import SCOPE as MASS_SCOPE
 from habfly.environments.mass import MassEnv, mass_cases, required_fields
@@ -27,17 +30,25 @@ class Workflow:
     max_steps: int = MAX_STEPS
 
     def required_for(self, star_class):
+        if self.task == "lifetime":
+            return lifetime_required_fields(star_class)
         if self.task == "radius":
             return radius_required_fields(star_class)
         return required_fields(star_class) if self.task == "mass" else list(self.required)
 
     def expected_steps(self, case):
-        if self.task in {"mass", "radius"} and case["star_class"] != "main_sequence":
+        if self.task in {"mass", "radius", "lifetime"} and case["star_class"] != "main_sequence":
             return 31
         return self.steps
 
     @property
     def applicability_metrics(self):
+        if self.task == "lifetime":
+            return (
+                "mass_applicability_correct",
+                "radius_applicability_correct",
+                "lifetime_applicability_correct",
+            )
         if self.task == "radius":
             return ("mass_applicability_correct", "radius_applicability_correct")
         return ("mass_applicability_correct",) if self.task == "mass" else ()
@@ -87,5 +98,16 @@ def workflow_spec(task):
             radius_cases,
             Path("experiments/mass-003/training/checkpoint.pt"),
             7600000,
+        )
+    if task == "lifetime":
+        return Workflow(
+            task,
+            LIFETIME_SCOPE,
+            ("distance", "luminosity", "temperature", "mass", "radius", "lifetime"),
+            60,
+            LifetimeEnv,
+            lifetime_cases,
+            Path("experiments/radius-001/training/checkpoint.pt"),
+            8600000,
         )
     raise ValueError("Unknown chained stellar workflow")

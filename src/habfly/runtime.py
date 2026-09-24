@@ -13,7 +13,7 @@ from pydantic import Field
 
 from .contracts import Contract, Observation, RuntimeCommand, RuntimeEvent, StepResult, task_completed
 
-LOCAL_CHECKPOINT_TASKS = {"distance", "luminosity", "temperature", "mass", "radius"}
+LOCAL_CHECKPOINT_TASKS = {"distance", "luminosity", "temperature", "mass", "radius", "lifetime"}
 CALCULATION_TASKS = LOCAL_CHECKPOINT_TASKS | {"stellar"}
 
 
@@ -27,11 +27,21 @@ class RunOptions(Contract):
     artifact_dir: Path = Path("experiments/runs")
     environment: Literal["simulator", "browser"] = "simulator"
     browser_config: Path | None = None
+    browser_setup: Literal["manual", "automatic"] = "manual"
+    browser_execution: Literal["supervised", "autonomous"] = "supervised"
     paused: bool = False
     interval: float = Field(default=0.2, ge=0, le=10)
-    task: Literal["mini_habworlds", "stellar", "distance", "luminosity", "temperature", "mass", "radius"] = (
-        "mini_habworlds"
-    )
+    task: Literal[
+        "mini_habworlds",
+        "stellar",
+        "distance",
+        "luminosity",
+        "temperature",
+        "mass",
+        "radius",
+        "lifetime",
+        "browser_numeric",
+    ] = "mini_habworlds"
     spreadsheet_config: Path | None = None
     calculation_backend: Literal["local", "google_sheets"] | None = None
     knowledge_pack: Path | None = None
@@ -56,6 +66,7 @@ class Runtime:
         self.replay_context = None
         self.last_tick = 0.0
         self.spreadsheet_adapter = None
+        self.expected_browser_identity = None  # Optional in-process batch constraint, never credentials.
 
     def emit(self, event, payload):
         item = RuntimeEvent(event=event, sequence=self.sequence, run_id=self.run_id, payload=payload)
@@ -102,11 +113,27 @@ class Runtime:
                 if self.options.task in CALCULATION_TASKS
                 else None,
                 "trace_path": str(self.trace_path) if self.trace_path else None,
+                **(self.env.state() if self.options.task == "browser_numeric" and self.env else {}),
+                **(
+                    {
+                        "stage": f"{self.options.browser_execution}_browser_numeric_transfer",
+                        "calculation_backend": "local",
+                        "calculation_mode": "local_tool_assisted",
+                    }
+                    if self.options.task == "browser_numeric"
+                    else {}
+                ),
             },
         )
 
     def start(self, payload):
         options = RunOptions.model_validate(payload)
+        if options.browser_setup != "manual" and options.task != "browser_numeric":
+            raise ValueError("Automatic setup is supported only for the supervised browser diagnostic")
+        if options.browser_execution == "autonomous" and (
+            options.task != "browser_numeric" or options.browser_setup != "automatic" or options.stars != 1
+        ):
+            raise ValueError("Autonomous execution requires automatic browser_numeric setup and one star")
         if options.policy == "checkpoint" and not options.checkpoint:
             raise ValueError("checkpoint policy requires checkpoint path")
         if options.environment == "browser" and options.policy != "checkpoint":
@@ -130,6 +157,34 @@ class Runtime:
         options.artifact_dir.mkdir(parents=True, exist_ok=True)
         self.trace_path = options.artifact_dir / f"{self.run_id}.jsonl"
         self.trace = self.trace_path.open("x")
+        if options.task == "browser_numeric":
+            from .browser_policy import BrowserPolicyBridge, load_browser_policy
+
+            self.policy, provenance = load_browser_policy(options)
+            if self.expected_browser_identity is not None and any(
+                provenance.get(key) != value for key, value in self.expected_browser_identity.items()
+            ):
+                from .browser import BrowserSafetyStop
+
+                raise BrowserSafetyStop("batch_provenance_changed")
+            self.env = BrowserPolicyBridge(options, options.artifact_dir / self.run_id, provenance)
+            self.neural_state = self.observation = None
+            self.status = (
+                "running" if options.browser_execution == "autonomous" and not options.paused else "paused"
+            )
+            self.emit(
+                "hello",
+                {
+                    "protocol_version": 1,
+                    "policy": "checkpoint",
+                    "synthetic": False,
+                    "activity_source": "checkpoint",
+                    "provenance": provenance,
+                    "scope": f"{options.browser_execution}_browser_numeric_transfer",
+                },
+            )
+            self.state()
+            return
         import torch
 
         from .content import load_content_pack
@@ -248,6 +303,12 @@ class Runtime:
             return
         if self.env is None or self.status not in {"running", "paused"}:
             raise ValueError("No active run")
+        if self.options.task == "browser_numeric":
+            automatic = self.options.browser_execution == "autonomous" and self.status == "running"
+            payload = {"approve_copy": True} if automatic and self.env.phase == "awaiting_copy" else {}
+            self.browser_step(payload, automatic=automatic)
+            self.last_tick = time.monotonic()
+            return
         import torch
 
         with torch.no_grad():
@@ -314,6 +375,132 @@ class Runtime:
             self.env.close()
         self.last_tick = time.monotonic()
 
+    def browser_step(self, payload, *, automatic=False):
+        """One decision or copy per tick; explicit autonomous opt-in never changes scope."""
+        bridge = self.env
+        if automatic and (self.options.browser_execution != "autonomous" or self.status != "running"):
+            raise ValueError("Automatic browser steps require a running autonomous run")
+        if not bridge or (not automatic and self.status != "paused"):
+            raise ValueError("No paused browser diagnostic")
+        if bridge.phase == "setting_up":
+            raise ValueError("Scripted setup is in progress; wait for ready or press a to abort")
+        ready = payload == {"browser_ready": True}
+        approve = payload == {"approve_copy": True}
+        if payload and not (ready or approve):
+            raise ValueError("Unknown browser step payload")
+        if ready and bridge.phase != "awaiting_ready":
+            raise ValueError("Browser already captured")
+        if approve and bridge.phase != "awaiting_copy":
+            raise ValueError("No pending copy")
+        if not payload and bridge.phase != "ready":
+            raise ValueError("Use b to capture the ready browser, or y to confirm its pending copy")
+        try:
+            if ready:
+                self.observation = bridge.ready()
+                self.emit("observation", self.observation.model_dump(mode="json"))
+                self.state()
+                return
+            if approve:
+                result = bridge.approve(automatic=automatic)
+            else:
+                import torch
+
+                with torch.no_grad():
+                    proposed, self.neural_state, _ = self.policy.act(self.observation, self.neural_state)
+                proposed.observation_revision = self.observation.revision
+                # Local calibration cannot establish browser probabilities.
+                proposed.action_confidence = proposed.target_confidence = None
+                proposed.calibrated = False
+                self.emit(
+                    "action_proposed",
+                    {
+                        **proposed.model_dump(mode="json"),
+                        "action_source": "checkpoint",
+                        "calibration_scope": "browser_transfer_not_calibrated",
+                    },
+                )
+                activity = self.policy.neural_activity(self.neural_state)
+                activity["activity_source"] = "checkpoint"
+                self.emit("neural_activity", activity)
+                result = bridge.propose(proposed)
+            if result is not None:
+                self.observation = result.observation
+                self.emit("action_result", result.model_dump(mode="json"))
+                self.emit("observation", self.observation.model_dump(mode="json"))
+                if result.terminated or result.truncated:
+                    self.status = "stopped"  # This is not a completed HabWorlds star.
+                    bridge.close()
+                    self.emit(
+                        "episode_summary",
+                        {
+                            **bridge.summary,
+                            "completed": False,
+                            "steps": result.steps,
+                            "transport_artifacts": str(bridge.journal.output),
+                        },
+                    )
+            self.state()
+        except Exception as exc:  # noqa: BLE001 - fail closed without leaking browser URLs
+            # Playwright exceptions may contain session URLs. Never serialize them.
+            import re
+
+            from .browser import BrowserSafetyStop
+            from .browser_stellar import StellarMappingError
+
+            code = (
+                str(exc)
+                if isinstance(exc, (BrowserSafetyStop, StellarMappingError))
+                else "browser_operation_failed"
+            )
+            if not re.fullmatch(r"[a-z][a-z0-9_]{0,100}", code):
+                code = "browser_operation_failed"
+            bridge.outcome = code
+            self.status = "stopped"
+            bridge.close()
+            self.emit("error", {"type": "BrowserDiagnosticStop", "message": code})
+            self.emit("episode_summary", {**bridge.summary, "completed": False, "failure_reason": code})
+            self.state()
+
+    def setup_tick(self):
+        bridge = self.env
+        active = self.status == ("running" if self.options.browser_execution == "autonomous" else "paused")
+        if not bridge or not active or bridge.phase != "setting_up":
+            return
+        from .browser_setup import SetupStop
+
+        try:
+            prior_stage = bridge.setup.stage
+            observation = bridge.advance_setup()
+            if observation is not None:
+                self.observation = observation
+                self.emit("observation", observation.model_dump(mode="json"))
+                self.last_tick = time.monotonic()
+            if observation is not None or bridge.setup.stage != prior_stage:
+                self.state()
+        except SetupStop as exc:
+            bridge.outcome = str(exc)
+            self.status = "stopped"
+            bridge.close(keep_browser_open=True)
+            self.emit("error", {"type": "BrowserSetupStop", "message": str(exc)})
+            self.emit("episode_summary", {**bridge.summary, "completed": False, "failure_reason": str(exc)})
+            self.state()
+
+    def advance_if_due(self):
+        """Shared scheduler for JSONL/TUI and bounded reliability runs.
+
+        Commands are handled before this method. Copy proposals and actual
+        copies occupy separate ticks so pause/abort can cancel a pending write.
+        """
+        if (
+            self.replay_events is None
+            and self.options.task == "browser_numeric"
+            and self.env
+            and self.env.phase == "setting_up"
+        ):
+            self.setup_tick()
+        elif self.status == "running" and time.monotonic() - self.last_tick >= self.options.interval:
+            self.tick()
+
     def command(self, message):
         command = RuntimeCommand.model_validate(message)
         if command.command == "start":
@@ -359,12 +546,29 @@ class Runtime:
         elif command.command in {"pause", "resume"}:
             if self.status not in {"running", "paused"}:
                 raise ValueError("No active run")
+            if (
+                self.options.task == "browser_numeric"
+                and self.options.browser_execution != "autonomous"
+                and self.replay_events is None
+                and command.command == "resume"
+            ):
+                raise ValueError("Browser diagnostic is single-step only: n steps; y confirms one copy")
             self.status = "paused" if command.command == "pause" else "running"
             self.state()
         elif command.command == "step":
             if self.status != "paused":
+                if (
+                    self.options.task == "browser_numeric"
+                    and self.env is not None
+                    and self.env.phase == "finished"
+                    and self.replay_events is None
+                ):
+                    raise ValueError(self.env.state()["browser_guidance"])
                 raise ValueError("Pause before single-stepping")
-            self.tick()
+            if self.options.task == "browser_numeric" and self.replay_events is None:
+                self.browser_step(command.payload)
+            else:
+                self.tick()
 
     def close(self):
         if self.env:
@@ -416,11 +620,8 @@ def serve(input_stream=None, output=None):
             try:
                 if line:
                     runtime.command(json.loads(line))
-                elif (
-                    runtime.status == "running"
-                    and time.monotonic() - runtime.last_tick >= runtime.options.interval
-                ):
-                    runtime.tick()
+                else:
+                    runtime.advance_if_due()
             except Exception as exc:  # noqa: BLE001 - protocol boundary must survive malformed commands
                 runtime.emit("error", {"message": str(exc), "type": type(exc).__name__})
                 if runtime.status == "running":

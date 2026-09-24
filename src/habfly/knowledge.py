@@ -173,13 +173,31 @@ class LocalCalculator:
         pass
 
     def execute(self, operation_id, bindings, star_class):
+        return self._execute(operation_id, bindings, star_class=star_class)
+
+    def execute_unclassified_common(self, operation_id, bindings):
+        """Numeric browser diagnostic only; never invent a supplied star class.
+
+        Existing training callers still require their supplied class. This explicit
+        scope admits only the three operations declared applicable to every class
+        in the pack; it cannot evaluate conditional mass/radius/lifetime formulas.
+        """
+        return self._execute(operation_id, bindings, unclassified_common=True)
+
+    def _execute(self, operation_id, bindings, *, star_class=None, unclassified_common=False):
         def fail(reason):
             return CalculationResult(ok=False, operation_id=operation_id, error=reason)
 
         op = self.pack.operation(operation_id)
         if op is None:
             return fail("unknown_operation")
-        if star_class not in op.applicable_classes:
+        applicable = (
+            operation_id in {"distance", "luminosity", "temperature"}
+            and set(op.applicable_classes) == set(STAR_CLASSES)
+            if unclassified_common
+            else star_class in op.applicable_classes
+        )
+        if not applicable:
             return fail("operation_not_applicable")
         if not isinstance(bindings, dict) or set(bindings) != set(op.inputs):
             return fail("missing_or_extra_inputs")
