@@ -12,7 +12,7 @@ from torch import nn
 from .tokenizer import CharacterTokenizer
 
 
-def measurement_request(observation: dict, control: dict) -> dict | None:
+def measurement_request(observation: dict, control: dict, *, include_results=False) -> dict | None:
     """Route by the visible control contract, never by opaque IDs or correct answers.
 
     This first stage covers measurement-only source lists after an input has been
@@ -27,6 +27,10 @@ def measurement_request(observation: dict, control: dict) -> dict | None:
     state = observation.get("calculation") or {}
     spec = (state.get("reference_card") or {}).get("inputs", {}).get(state.get("parameter"))
     measurements = (observation.get("values") or {}).get("measurements", {})
+    if include_results:
+        from .tool_state import visible_sources
+
+        measurements = visible_sources(observation)
     options = control.get("options", [])
     if not spec or not options or any(option not in measurements for option in options):
         return None

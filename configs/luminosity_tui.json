@@ -1,0 +1,13 @@
+{
+  "task": "luminosity",
+  "environment": "simulator",
+  "policy": "checkpoint",
+  "calculation_backend": "local",
+  "graph": "data/processed/graphs-v2/graph-2000",
+  "checkpoint": "experiments/luminosity-002/training/checkpoint.pt",
+  "dataset": "experiments/luminosity-002",
+  "seed": 3500000,
+  "paused": true,
+  "interval": 0.8,
+  "artifact_dir": "experiments/manual-luminosity"
+}

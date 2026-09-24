@@ -11,6 +11,7 @@ from pathlib import Path
 
 from habfly.runtime import Runtime, read_trace
 from habfly.spreadsheet import SpreadsheetAdapter
+from habfly.training.chained_workflow import workflow_spec
 from habfly.training.stellar import write_json
 
 
@@ -28,6 +29,7 @@ def main():
     socket.socket.connect = socket.socket.connect_ex = socket.create_connection = deny
     SpreadsheetAdapter.__init__ = deny
     payload = json.loads(args.profile.read_text())
+    expected_steps = 10 if payload["task"] == "distance" else workflow_spec(payload["task"]).steps
     manifest = json.loads((Path(payload["dataset"]) / "manifest.json").read_text())
     checkpoint = Path(payload["checkpoint"])
     before = hashlib.sha256(checkpoint.read_bytes()).hexdigest()
@@ -59,7 +61,7 @@ def main():
             runtime.command({"command": "resume"})
             while runtime.status == "running":
                 runtime.tick()
-            assert runtime.status == "completed" and runtime.env.steps == 10
+            assert runtime.status == "completed" and runtime.env.steps == expected_steps
             saved = args.output / f"{seed}.events.jsonl"
             runtime.command({"command": "save_trace", "payload": {"path": str(saved)}})
             events = read_trace(saved)
@@ -67,8 +69,11 @@ def main():
             assert summary["completed"] and summary["policy"] == "checkpoint"
             actions = [e.payload for e in events if e.event == "action_proposed"]
             neural = [e.payload for e in events if e.event == "neural_activity"]
-            assert len(actions) == len(neural) == 10
-            assert all(a["action_source"] == "checkpoint" and not a["calibrated"] for a in actions)
+            assert len(actions) == len(neural) == expected_steps
+            assert all(a["action_source"] == "checkpoint" for a in actions)
+            assert all(
+                a["calibrated"] == (runtime.policy.calibration.get("status") == "calibrated") for a in actions
+            )
             assert all(n["top_neurons"] and n["activity_source"] == "checkpoint" for n in neural)
             assert not any(e.event == "error" for e in events)
             replay = subprocess.run(

@@ -8,13 +8,15 @@ import sys
 from pathlib import Path
 
 from habfly.knowledge import load_knowledge_pack
-from habfly.runtime import RunOptions
+from habfly.runtime import LOCAL_CHECKPOINT_TASKS, RunOptions
+from habfly.training.chained_workflow import workflow_spec
 from habfly.training.distance_session import load_distance_session
+from habfly.training.luminosity_session import load_chain_session
 
 
-def main():
+def main(default_profile="configs/distance_tui.json"):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--profile", type=Path, default=Path("configs/distance_tui.json"))
+    parser.add_argument("--profile", type=Path, default=Path(default_profile))
     parser.add_argument("--seed", type=int)
     parser.add_argument("--check", action="store_true", help="Validate artifacts without launching the TUI")
     args = parser.parse_args()
@@ -24,7 +26,7 @@ def main():
         payload["seed"] = args.seed
     settings = RunOptions.model_validate(payload)
     if (
-        settings.task != "distance"
+        settings.task not in LOCAL_CHECKPOINT_TASKS
         or settings.policy != "checkpoint"
         or settings.backend != "local"
         or settings.environment != "simulator"
@@ -33,16 +35,20 @@ def main():
         or not settings.checkpoint
         or not settings.dataset
     ):
-        parser.error("This launcher supports only the local distance checkpoint profile")
-    load_distance_session(
-        settings.dataset, settings.checkpoint, load_knowledge_pack(settings.knowledge_pack), settings.seed
-    )
+        parser.error("This launcher supports only promoted local calculation checkpoint profiles")
+    pack = load_knowledge_pack(settings.knowledge_pack)
+    if settings.task == "distance":
+        load_distance_session(settings.dataset, settings.checkpoint, pack, settings.seed)
+    else:
+        load_chain_session(settings.dataset, settings.checkpoint, pack, settings.seed, task=settings.task)
     if args.check:
         print(
             json.dumps(
                 {
                     "status": "ready",
-                    "scope": "distance_only",
+                    "scope": "distance_only"
+                    if settings.task == "distance"
+                    else "_".join(workflow_spec(settings.task).required),
                     "paused": settings.paused,
                     "seed": settings.seed,
                     "checkpoint": str(settings.checkpoint),

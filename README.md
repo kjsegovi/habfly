@@ -4,7 +4,19 @@ A local connectome-constrained learning experiment, with a Python/PyTorch engine
 
 The default runnable demo uses an explicitly **synthetic star-analysis environment**. Its scripted expert completes one, three, or 30 stars. A separate **learned distance-only checkpoint** now passes 100/100 held-out local tasks and is ready for a [manual TUI trial](docs/distance-manual-test.md). Neither demo establishes learned completion of the actual HabWorlds Project.
 
-## Try the learned distance checkpoint
+## Try the learned local checkpoints
+
+The next checkpoint, **distance → luminosity**, now passes **100/100** held-out
+local tasks, including reuse of the calculated distance and selection of the
+current star's flux. Start its paused TUI with:
+
+```sh
+.venv/bin/python scripts/luminosity_tui.py
+```
+
+See the [two-calculation manual guide](docs/luminosity-manual-test.md) for expected
+answers, scope, verified scores and replay. This remains local tool-assisted
+learning, not a live HabWorlds attempt.
 
 With this machine's existing graph, dependencies and verified checkpoint:
 

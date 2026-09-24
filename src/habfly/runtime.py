@@ -13,6 +13,9 @@ from pydantic import Field
 
 from .contracts import Contract, Observation, RuntimeCommand, RuntimeEvent, StepResult, task_completed
 
+LOCAL_CHECKPOINT_TASKS = {"distance", "luminosity", "temperature"}
+CALCULATION_TASKS = LOCAL_CHECKPOINT_TASKS | {"stellar"}
+
 
 class RunOptions(Contract):
     seed: int = 0
@@ -26,7 +29,7 @@ class RunOptions(Contract):
     browser_config: Path | None = None
     paused: bool = False
     interval: float = Field(default=0.2, ge=0, le=10)
-    task: Literal["mini_habworlds", "stellar", "distance"] = "mini_habworlds"
+    task: Literal["mini_habworlds", "stellar", "distance", "luminosity", "temperature"] = "mini_habworlds"
     spreadsheet_config: Path | None = None
     calculation_backend: Literal["local", "google_sheets"] | None = None
     knowledge_pack: Path | None = None
@@ -83,18 +86,18 @@ class Runtime:
                 "stars": self.options.stars,
                 "policy": self.options.policy,
                 "stage": self.options.task
-                if self.options.task in {"stellar", "distance"}
+                if self.options.task in CALCULATION_TASKS
                 else ("synthetic_demo" if self.options.environment == "simulator" else "browser_inference"),
                 "graph": str(self.options.graph or "synthetic-32"),
                 "checkpoint": str(self.options.checkpoint or "none"),
                 "browser_status": "visible" if self.options.environment == "browser" else "not_connected",
                 "calculation_backend": self.options.backend
-                if self.options.task in {"stellar", "distance"}
+                if self.options.task in CALCULATION_TASKS
                 else None,
                 "calculation_mode": (
                     "local_tool_assisted" if self.options.backend == "local" else "google_sheets"
                 )
-                if self.options.task in {"stellar", "distance"}
+                if self.options.task in CALCULATION_TASKS
                 else None,
                 "trace_path": str(self.trace_path) if self.trace_path else None,
             },
@@ -106,17 +109,19 @@ class Runtime:
             raise ValueError("checkpoint policy requires checkpoint path")
         if options.environment == "browser" and options.policy != "checkpoint":
             raise ValueError("Browser runs require a trained checkpoint")
-        if options.task in {"stellar", "distance"} and options.environment == "browser":
+        if options.task in CALCULATION_TASKS and options.environment == "browser":
             raise ValueError("Stellar v1 cannot run against the HabWorlds browser")
-        if options.task in {"stellar", "distance"} and not options.dataset:
+        if options.task in CALCULATION_TASKS and not options.dataset:
             raise ValueError("Stellar runtime requires dataset")
-        if options.task == "distance" and (
+        if options.task in LOCAL_CHECKPOINT_TASKS and (
             options.policy != "checkpoint"
             or not options.graph
             or options.backend != "local"
             or options.spreadsheet_config
         ):
-            raise ValueError("Distance demo requires a checkpoint, graph and local-only calculation backend")
+            raise ValueError(
+                "Local calculation demo requires a checkpoint, graph and local-only calculation backend"
+            )
         self.close()
         self.options = options
         self.run_id = uuid.uuid4().hex
@@ -140,14 +145,20 @@ class Runtime:
 
             stellar_manifest, stellar_data = load_dataset(options.dataset)
             identity = training_content(stellar_manifest)
-        elif options.task == "distance":
+        elif options.task in LOCAL_CHECKPOINT_TASKS:
             from .knowledge import load_knowledge_pack
             from .training.distance_session import load_distance_session
+            from .training.luminosity_session import load_chain_session
 
             config = load_knowledge_pack(options.knowledge_pack)
-            identity, distance_case = load_distance_session(
-                options.dataset, options.checkpoint, config, options.seed
-            )
+            if options.task == "distance":
+                identity, distance_case = load_distance_session(
+                    options.dataset, options.checkpoint, config, options.seed
+                )
+            else:
+                identity, distance_case = load_chain_session(
+                    options.dataset, options.checkpoint, config, options.seed, task=options.task
+                )
         if options.policy == "checkpoint":
             from .training.checkpoints import load_checkpoint
 
@@ -174,13 +185,20 @@ class Runtime:
             except Exception:
                 self.close()
                 raise
-        elif options.task == "distance":
+        elif options.task in LOCAL_CHECKPOINT_TASKS:
             from .environments.distance_diagnostic import DistanceDiagnosticEnv
             from .knowledge import LocalCalculator
+            from .training.chained_workflow import workflow_spec
 
             self.spreadsheet_adapter = LocalCalculator(config)
             self.spreadsheet_adapter.verify()
-            self.env = DistanceDiagnosticEnv(self.spreadsheet_adapter, [distance_case], max_steps=32)
+            workflow = workflow_spec(options.task) if options.task != "distance" else None
+            environment = workflow.environment if workflow else DistanceDiagnosticEnv
+            self.env = environment(
+                self.spreadsheet_adapter,
+                [distance_case],
+                max_steps=workflow.max_steps if workflow else 32,
+            )
             observation, _ = self.env.reset(seed=options.seed)
             self.observation = Observation.model_validate(observation)
         elif options.environment == "browser":
@@ -202,7 +220,7 @@ class Runtime:
                 "protocol_version": 1,
                 "policy": options.policy,
                 "content_pack": config.content_identity()
-                if options.task in {"stellar", "distance"}
+                if options.task in CALCULATION_TASKS
                 else self.pack.id,
                 "synthetic": self.pack.synthetic,
                 "activity_source": "untrained_observer" if options.policy == "expert" else options.policy,

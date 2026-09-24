@@ -16,6 +16,14 @@ from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
 from .measurement_identity import MeasurementIdentityPointer, measurement_request
 from .source_request import SourceRequestPointer
 from .tokenizer import CharacterTokenizer
+from .tool_state import (
+    CONTROL_LABELS,
+    OPTION_WIDTH,
+    STATE_WIDTH,
+    control_features,
+    option_features,
+    state_features,
+)
 
 ACTION_KINDS = ("CLICK", "TYPE", "SELECT", "HOVER", "DRAG", "SCROLL", "KEYPRESS", "WAIT", "STOP")
 
@@ -170,6 +178,7 @@ class ConnectomePolicy(nn.Module):
         tokenizer: CharacterTokenizer | None = None,
         observation_encoding: str = "pooled_text_v2",
         selection_mode: str = "characters",
+        control_encoding: str = "characters",
     ):
         super().__init__()
         if hidden_size < 4 or propagation_steps < 1 or max_answer_length < 2:
@@ -179,7 +188,7 @@ class ConnectomePolicy(nn.Module):
         self.propagation_steps = propagation_steps
         self.max_answer_length = max_answer_length
         self.tokenizer = tokenizer or CharacterTokenizer()
-        if observation_encoding not in ("pooled_text_v2", "structured_tool_v3"):
+        if observation_encoding not in ("pooled_text_v2", "structured_tool_v3", "structured_tool_v4"):
             raise ValueError("Unknown observation encoding")
         if selection_mode not in (
             "characters",
@@ -187,10 +196,14 @@ class ConnectomePolicy(nn.Module):
             "option_pointer_semantic_v2",
             "measurement_identity_v1",
             "measurement_source_v2",
+            "measurement_result_v3",
         ):
             raise ValueError("Unknown selection mode")
         self.observation_encoding = observation_encoding
         self.selection_mode = selection_mode
+        if control_encoding not in ("characters", "semantic_tool_v1"):
+            raise ValueError("Unknown control encoding")
+        self.control_encoding = control_encoding
         self.graph_hash = graph_fingerprint(graph)
         self.action_temperature = 1.0
         self.target_temperature = 1.0
@@ -211,10 +224,17 @@ class ConnectomePolicy(nn.Module):
         self.value_chars = nn.Linear(hidden_size, self.tokenizer.vocab_size)
         self.answer_chars = nn.Linear(hidden_size, self.tokenizer.vocab_size)
         self.chart_encoder = ChartEncoder(hidden_size)
+        if control_encoding == "semantic_tool_v1":
+            self.control_projection = nn.Linear(len(CONTROL_LABELS), hidden_size, bias=False)
+        if observation_encoding == "structured_tool_v4":
+            self.tool_state_projection = nn.Linear(STATE_WIDTH, hidden_size)
+        if selection_mode == "measurement_result_v3":
+            self.option_projection = nn.Linear(OPTION_WIDTH, hidden_size, bias=False)
+            self.option_query = nn.Linear(hidden_size, hidden_size, bias=False)
         # Conditional construction keeps strict loading of old checkpoints unchanged.
-        if selection_mode in ("measurement_identity_v1", "measurement_source_v2"):
+        if selection_mode in ("measurement_identity_v1", "measurement_source_v2", "measurement_result_v3"):
             self.measurement_identity = MeasurementIdentityPointer(self.tokenizer, hidden_size)
-            if selection_mode == "measurement_source_v2":
+            if selection_mode in ("measurement_source_v2", "measurement_result_v3"):
                 self.measurement_identity.source_request = SourceRequestPointer(self.tokenizer, hidden_size)
         n = len(graph.body_ids)
         if not n or np.asarray(graph.node_features).shape != (n, 5):
@@ -253,6 +273,7 @@ class ConnectomePolicy(nn.Module):
             "architecture": type(self).__name__,
             "observation_encoding": self.observation_encoding,
             "selection_mode": self.selection_mode,
+            "control_encoding": self.control_encoding,
         }
 
     def tool_features(self, observation: Any) -> torch.Tensor:
@@ -298,8 +319,14 @@ class ConnectomePolicy(nn.Module):
     def option_scores(self, observation: Any, control: Any, pooled: torch.Tensor) -> torch.Tensor:
         """Rank actual visible options using their visible metadata, not generated IDs."""
         obs, target = as_dict(observation), as_dict(control)
-        if self.selection_mode in ("measurement_identity_v1", "measurement_source_v2"):
-            request = measurement_request(obs, target)
+        if self.selection_mode in (
+            "measurement_identity_v1",
+            "measurement_source_v2",
+            "measurement_result_v3",
+        ):
+            request = measurement_request(
+                obs, target, include_results=self.selection_mode == "measurement_result_v3"
+            )
             if request is not None:
                 return self.measurement_identity([request], pooled)[0]
         state = obs.get("calculation") or {}
@@ -307,7 +334,10 @@ class ConnectomePolicy(nn.Module):
         texts = []
         for option in target.get("options", []):
             metadata = sources.get(option)
-            if metadata is not None and self.selection_mode == "option_pointer_semantic_v2":
+            if metadata is not None and self.selection_mode in (
+                "option_pointer_semantic_v2",
+                "measurement_result_v3",
+            ):
                 # Stellar source selection asks WHICH quantity/reference to use.
                 # Magnitudes remain visible to the core/tool, but are not source identity.
                 metadata = {k: v for k, v in metadata.items() if k in ("kind", "unit", "source", "valid")}
@@ -316,6 +346,9 @@ class ConnectomePolicy(nn.Module):
         if not texts or any(len(text) + 2 > self.tokenizer.max_length for text in texts):
             raise ValueError("Option text is empty or exceeds a section token budget")
         keys = self.encode_text(texts)
+        if self.selection_mode == "measurement_result_v3":
+            features = keys.new_tensor([option_features(obs, option) for option in target["options"]])
+            keys = keys + self.option_projection(features)
         # The option list's order and opaque IDs must not change the query.
         context = self.encode_text(
             [f"{target.get('role', '')} {target.get('label', '')} {target.get('surface', '')}"]
@@ -325,6 +358,8 @@ class ConnectomePolicy(nn.Module):
             if self.selection_mode == "option_pointer_semantic_v2"
             else self.target_query(pooled + context)
         )
+        if self.selection_mode == "measurement_result_v3":
+            query = self.option_query(pooled + context)
         return (keys * query).sum(-1) / self.hidden_size**0.5
 
     def encode_text(self, texts: list[str]) -> torch.Tensor:
@@ -344,6 +379,9 @@ class ConnectomePolicy(nn.Module):
         groups = []
         for control in controls:
             data = {k: v for k, v in as_dict(control).items() if k != "id"}
+            if target and self.selection_mode == "measurement_result_v3":
+                data = {k: v for k, v in data.items() if k in ("role", "label", "surface")}
+                control = data
             text = control_text(control) if target else f"control: {json.dumps(data, sort_keys=True)}"
             budget = self.tokenizer.max_length - 2
             groups.append(
@@ -471,6 +509,9 @@ class ConnectomePolicy(nn.Module):
             encoded = encoded + self.chart_encoder(chart_pixels.to(self.device))
         if self.observation_encoding == "structured_tool_v3":
             encoded = encoded + torch.stack([self.tool_features(o) for o in observations])
+        if self.observation_encoding == "structured_tool_v4":
+            features = encoded.new_tensor([state_features(as_dict(o)) for o in observations])
+            encoded = encoded + self.tool_state_projection(features)
         state, pooled = self.propagate(encoded, state)
         controls = [as_dict(observation).get("controls", []) for observation in observations]
         max_targets = max(1, max(map(len, controls)))
@@ -479,6 +520,9 @@ class ConnectomePolicy(nn.Module):
         for row, candidates in enumerate(controls):
             if candidates:
                 keys = self.encode_controls(candidates, target=True)
+                if self.control_encoding == "semantic_tool_v1":
+                    features = keys.new_tensor([control_features(as_dict(c)) for c in candidates])
+                    keys = keys + self.control_projection(features)
                 scores = (keys * query[row]).sum(-1) / self.hidden_size**0.5
                 enabled = torch.tensor(
                     [as_dict(c).get("enabled", True) for c in candidates], device=self.device

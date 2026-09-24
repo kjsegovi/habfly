@@ -526,6 +526,90 @@ mod tests {
     }
 
     #[test]
+    fn luminosity_chain_shows_reused_distance_and_both_result_options() {
+        let app = App {
+            focused_panel: 3,
+            observation: serde_json::json!({"instruction":"Distance and luminosity", "calculation": {
+                "calculation_mode":"local_tool_assisted", "operation":"luminosity",
+                "reference_card":{"description":"Flux and distance luminosity", "inputs":{"distance":{"unit":"ly"},"flux":{"unit":"W/m2"}}},
+                "parameter":"distance", "source":"r1", "bindings":{"distance":"r1","flux":"m2"},
+                "results":{"r1":{"kind":"distance","value":101.875,"unit":"ly","valid":true},
+                    "r2":{"kind":"luminosity","value":0.0157,"unit":"Lsun","valid":true}},
+                "selected_result":"r2", "destination":"luminosity", "tool_error":null},
+                "values":{"answers":{"distance":101.875,"luminosity":0.0157},"units":{"distance":"ly","luminosity":"Lsun"}}}),
+            ..App::default()
+        };
+        let mut terminal = Terminal::new(TestBackend::new(150, 45)).unwrap();
+        terminal.draw(|frame| draw(frame, &app)).unwrap();
+        let text: String = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        for expected in [
+            "Flux and distance luminosity",
+            "W/m2",
+            "101.875",
+            "Lsun",
+            "r2 → luminosity",
+        ] {
+            assert!(text.contains(expected), "Missing {expected}");
+        }
+        assert_eq!(
+            option_text(&app, &serde_json::json!("r1")),
+            "r1: distance 101.875 ly (valid true)"
+        );
+        assert_eq!(
+            option_text(&app, &serde_json::json!("r2")),
+            "r2: luminosity 0.0157 Lsun (valid true)"
+        );
+    }
+
+    #[test]
+    fn temperature_chain_shows_peak_wavelength_kelvin_and_all_answers() {
+        let app = App {
+            focused_panel: 3,
+            observation: serde_json::json!({"instruction":"Distance, luminosity and temperature", "calculation": {
+                "calculation_mode":"local_tool_assisted", "operation":"temperature",
+                "reference_card":{"description":"Temperature from peak wavelength", "inputs":{"wavelength":{"unit":"nm"}}},
+                "parameter":"wavelength", "source":"m4", "bindings":{"wavelength":"m4"},
+                "results":{"r1":{"kind":"distance","value":101.875,"unit":"ly","valid":true},
+                    "r2":{"kind":"luminosity","value":0.0157,"unit":"Lsun","valid":true},
+                    "r3":{"kind":"temperature","value":13668.719339622641,"unit":"K","valid":true}},
+                "selected_result":"r3", "destination":"temperature", "tool_error":null},
+                "values":{"measurements":{"m4":{"kind":"wavelength","value":212,"unit":"nm","source":"current star"}},
+                    "answers":{"distance":101.875,"luminosity":0.0157,"temperature":13668.719339622641},
+                    "units":{"distance":"ly","luminosity":"Lsun","temperature":"K"}}}),
+            ..App::default()
+        };
+        let mut terminal = Terminal::new(TestBackend::new(150, 45)).unwrap();
+        terminal.draw(|frame| draw(frame, &app)).unwrap();
+        let text: String = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        for expected in [
+            "Temperature from peak wavelength",
+            "212 nm (current star)",
+            "101.875",
+            "Lsun",
+            "13668.719339622641",
+            "r3 → temperature",
+        ] {
+            assert!(text.contains(expected), "Missing {expected}");
+        }
+        assert_eq!(
+            option_text(&app, &serde_json::json!("r3")),
+            "r3: temperature 13668.719339622641 K (valid true)"
+        );
+    }
+
+    #[test]
     fn focused_neural_view_exposes_top_neurons_in_standard_terminal() {
         let mut app = App::default();
         for line in include_str!("../tests/fixtures/session.jsonl").lines() {
