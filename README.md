@@ -6,7 +6,18 @@ The default runnable demo uses an explicitly **synthetic star-analysis environme
 
 ## Try the learned local checkpoints
 
-The next checkpoint, **distance → luminosity**, now passes **100/100** held-out
+The newest checkpoint adds **temperature** to distance and luminosity. After a
+source-language repair, it passed **100/100 new held-out local tasks**. Start the
+paused three-calculation TUI with:
+
+```sh
+.venv/bin/python scripts/temperature_tui.py
+```
+
+See the [three-calculation manual guide](docs/temperature-manual-test.md) for
+expected answers, preserved failed experiments, scope and replay.
+
+The preserved **distance → luminosity** checkpoint passes **100/100** held-out
 local tasks, including reuse of the calculated distance and selection of the
 current star's flux. Start its paused TUI with:
 

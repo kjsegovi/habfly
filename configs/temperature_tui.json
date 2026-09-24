@@ -4,9 +4,9 @@
   "policy": "checkpoint",
   "calculation_backend": "local",
   "graph": "data/processed/graphs-v2/graph-2000",
-  "checkpoint": "experiments/temperature-001/training/checkpoint.pt",
-  "dataset": "experiments/temperature-001",
-  "seed": 4500000,
+  "checkpoint": "experiments/temperature-source-003/training/checkpoint.pt",
+  "dataset": "experiments/temperature-source-003",
+  "seed": 5500000,
   "paused": true,
   "interval": 0.8,
   "artifact_dir": "experiments/manual-temperature"

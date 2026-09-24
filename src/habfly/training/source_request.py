@@ -164,7 +164,7 @@ def train_source(
         if not 0 < warmup_updates < updates or not 0 <= rehearsal_pairs < PAIRS_PER_BATCH:
             raise ValueError("Invalid bounded warm-up schedule")
     if (
-        policy.selection_mode != "measurement_source_v2"
+        policy.selection_mode not in {"measurement_source_v2", "measurement_result_v3"}
         or contexts.ndim != 2
         or contexts.shape[1] != policy.hidden_size
         or not len(contexts)
