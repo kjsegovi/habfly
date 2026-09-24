@@ -175,7 +175,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             if key.code == KeyCode::Char('q')
                 || (key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL))
             {
-                let _ = process.send(RuntimeCommand::new(CommandKind::Abort, json!({})));
+                if matches!(app.state["status"].as_str(), Some("running" | "paused")) {
+                    let _ = process.send(RuntimeCommand::new(CommandKind::Abort, json!({})));
+                }
                 break;
             }
             match key.code {
@@ -203,8 +205,18 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     CommandKind::SaveTrace,
                     json!({"path":options.trace}),
                 ),
-                KeyCode::Up => app.controls_scroll = app.controls_scroll.saturating_sub(1),
-                KeyCode::Down => app.controls_scroll = app.controls_scroll.saturating_add(1),
+                KeyCode::Up | KeyCode::Down => {
+                    let offset = if app.focused_panel == 3 {
+                        &mut app.observation_scroll
+                    } else {
+                        &mut app.controls_scroll
+                    };
+                    *offset = if key.code == KeyCode::Up {
+                        offset.saturating_sub(1)
+                    } else {
+                        offset.saturating_add(1)
+                    };
+                }
                 KeyCode::Char('v') => app.focused_panel = (app.focused_panel + 1) % 4,
                 _ => {}
             }

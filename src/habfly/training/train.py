@@ -11,6 +11,7 @@ import random
 import resource
 import sys
 import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -20,6 +21,7 @@ from torch.nn import functional as F
 
 from habfly.contracts import Action, Observation
 from habfly.model import ACTION_KINDS, ConnectomePolicy
+from habfly.model.policy import legal_action_mask, legal_target_mask
 
 from .calibration import fit_temperature
 from .checkpoints import save_checkpoint, source_hash
@@ -65,11 +67,60 @@ def supervised_loss(policy: ConnectomePolicy, examples: list[Example], state=Non
     values = value_tokens(policy, [e.action.value or "" for e in examples])
     answers = value_tokens(policy, [e.answer for e in examples])
     output = policy([e.observation for e in examples], state, teacher_values=values, teacher_answers=answers)
-    loss = F.cross_entropy(output.action_logits, action_labels)
+    action_masks = torch.stack([legal_action_mask(e.observation, policy.device) for e in examples])
+    target_masks = torch.stack(
+        [
+            legal_target_mask(
+                e.observation, str(e.action.kind), policy.device, width=output.target_logits.shape[1]
+            )
+            for e in examples
+        ]
+    )
+    for row, example in enumerate(examples):
+        if not action_masks[row, action_labels[row]]:
+            raise ValueError("Expert action is not available in the observation")
+        if example.action.kind in ("WAIT", "STOP"):
+            target_labels[row] = -100
+        elif target_labels[row] < 0 or not target_masks[row, target_labels[row]]:
+            raise ValueError("Expert target is not available for its action kind")
+    loss = F.cross_entropy(output.action_logits.masked_fill(~action_masks, -1e9), action_labels)
     if (target_labels >= 0).any():
-        loss = loss + F.cross_entropy(output.target_logits, target_labels, ignore_index=-100)
-    loss = loss + F.cross_entropy(output.typed_value_logits.flatten(0, 1), values.flatten(), ignore_index=0)
-    loss = loss + F.cross_entropy(output.answer_logits.flatten(0, 1), answers.flatten(), ignore_index=0)
+        loss = loss + F.cross_entropy(
+            output.target_logits.masked_fill(~target_masks, -1e9), target_labels, ignore_index=-100
+        )
+    if policy.selection_mode != "characters":
+        option_losses = []
+        for row, example in enumerate(examples):
+            if example.action.kind == "SELECT":
+                control = example.observation.controls[int(target_labels[row])]
+                if example.action.value not in control.options:
+                    raise ValueError("Expert value is not a visible option")
+                scores = policy.option_scores(example.observation, control, output.pooled[row : row + 1])
+                option_losses.append(
+                    F.cross_entropy(
+                        scores[None],
+                        scores.new_tensor([control.options.index(example.action.value)], dtype=torch.long),
+                    )
+                )
+        if option_losses:
+            loss = loss + torch.stack(option_losses).mean()
+        text_rows = [i for i, e in enumerate(examples) if e.action.kind in ("TYPE", "KEYPRESS")]
+        # SELECT is an option decision, not two copies of a string-generation task.
+        # Untyped CLICK actions do not need an empty-string prediction either.
+        if text_rows:
+            loss = loss + F.cross_entropy(
+                output.typed_value_logits[text_rows].flatten(0, 1),
+                values[text_rows].flatten(),
+                ignore_index=0,
+            )
+            loss = loss + F.cross_entropy(
+                output.answer_logits[text_rows].flatten(0, 1), answers[text_rows].flatten(), ignore_index=0
+            )
+    else:
+        loss = loss + F.cross_entropy(
+            output.typed_value_logits.flatten(0, 1), values.flatten(), ignore_index=0
+        )
+        loss = loss + F.cross_entropy(output.answer_logits.flatten(0, 1), answers.flatten(), ignore_index=0)
     pointer_target, pointer_prediction = [], []
     for row, example in enumerate(examples):
         for col, key in enumerate(("x", "y", "dx", "dy")):
@@ -131,19 +182,12 @@ def calibrate_policy(policy: ConnectomePolicy, examples: list[Example], *, episo
         output = policy([example.observation], state)
         state = output.state.detach()
         labels, targets = _labels([example], policy.device)
-        permitted = {"WAIT", "STOP"}
-        for control in example.observation.controls:
-            if control.enabled:
-                permitted.update(str(k) for k in control.actions)
-        mask = torch.tensor([k in permitted for k in ACTION_KINDS], device=policy.device)
+        mask = legal_action_mask(example.observation, policy.device)
         action_logits.append(output.action_logits[0].masked_fill(~mask, -1e9).cpu())
         action_labels.append(int(labels[0]))
         if int(targets[0]) >= 0 and int(action_logits[-1].argmax()) == int(labels[0]):
             padded = torch.full((max_targets,), -1e9)
-            mask = torch.tensor(
-                [c.enabled and example.action.kind in c.actions for c in example.observation.controls],
-                device=policy.device,
-            )
+            mask = legal_target_mask(example.observation, str(example.action.kind), policy.device)
             padded[: output.target_logits.shape[1]] = output.target_logits[0].masked_fill(~mask, -1e9).cpu()
             target_logits.append(padded)
             target_labels.append(int(targets[0]))
@@ -288,7 +332,13 @@ def train_behavioral_cloning(
     learning_rate: float = 0.003,
     content_pack: dict | None = None,
     policy: ConnectomePolicy | None = None,
+    sequence_length: int = 1,
+    progress_callback: Callable[[dict], None] | None = None,
 ) -> dict:
+    # Opt in explicitly for bounded experiments; long existing stellar/Mini
+    # trajectories retain their previous memory budget unless configured here.
+    if isinstance(sequence_length, bool) or not isinstance(sequence_length, int) or sequence_length < 1:
+        raise ValueError("Behavioral cloning requires a positive integer sequence length")
     if not episodes or not validation_episodes:
         raise ValueError("Behavioral cloning needs separate training and validation episodes")
     train_hashes = {source_hash(episode) for episode in episodes}
@@ -311,28 +361,48 @@ def train_behavioral_cloning(
     started = time.perf_counter()
     optimizer = torch.optim.AdamW(policy.parameters(), lr=learning_rate)
     losses = []
+    optimizer_steps = supervised_decisions = 0
     rng = random.Random(seed)
     if epochs < 1:
         raise ValueError("Behavioral cloning requires positive epochs")
-    for _ in range(epochs):
+    for epoch in range(epochs):
         policy.train()
         ordered = list(episodes)
         rng.shuffle(ordered)
         total_loss, count = 0.0, 0
         for episode in ordered:
             state = None
-            for example in episodes_to_examples([episode]):
+            examples = episodes_to_examples([episode])
+            for start in range(0, len(examples), sequence_length):
                 optimizer.zero_grad(set_to_none=True)
-                loss, output = supervised_loss(policy, [example], state)
-                if not torch.isfinite(loss):
-                    raise RuntimeError("Behavioral cloning produced nonfinite loss")
-                loss.backward()
+                sequence_losses = []
+                for example in examples[start : start + sequence_length]:
+                    loss, output = supervised_loss(policy, [example], state)
+                    if not torch.isfinite(loss):
+                        raise RuntimeError("Behavioral cloning produced nonfinite loss")
+                    sequence_losses.append(loss)
+                    state = output.state
+                    total_loss += float(loss.detach())
+                    count += 1
+                # Weights stay fixed throughout the unroll. Every decision's
+                # gradient can reach earlier observations in this sequence.
+                torch.stack(sequence_losses).mean().backward()
                 torch.nn.utils.clip_grad_norm_(policy.parameters(), 1.0, error_if_nonfinite=True)
                 optimizer.step()
-                state = output.state.detach()
-                total_loss += float(loss.detach())
-                count += 1
+                state = state.detach()
+                optimizer_steps += 1
+                supervised_decisions += len(sequence_losses)
         losses.append(total_loss / max(count, 1))
+        if progress_callback:
+            progress_callback(
+                {
+                    "epoch": epoch + 1,
+                    "epochs": epochs,
+                    "loss": losses[-1],
+                    "optimizer_steps": optimizer_steps,
+                    "supervised_decisions": supervised_decisions,
+                }
+            )
     policy.eval()
     policy.vision_trained = policy.vision_trained or any(e.observation.chart_crop for e in train)
     # Calibration uses whole alternate episodes, avoiding timestep-level leakage.
@@ -348,6 +418,9 @@ def train_behavioral_cloning(
         "stage": "behavioral_cloning",
         "seed": seed,
         "epochs": epochs,
+        "sequence_length": sequence_length,
+        "optimizer_steps": optimizer_steps,
+        "supervised_decisions": supervised_decisions,
         "losses": losses,
         "training_episodes": len(episodes),
         "validation_episodes": len(validation_episodes),

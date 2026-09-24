@@ -57,6 +57,7 @@ def case_and_env(seed=600000):
 def test_default_budget_is_explicit_and_capped():
     settings = load_distance_config("configs/distance_diagnostic.yaml")
     assert settings == DistanceDiagnosticConfig()
+    assert settings.training_cases * settings.epochs == 80
     assert settings.training_cases * settings.epochs * 10 == 800
     for changes in (
         {"epochs": 21},
@@ -214,7 +215,10 @@ def test_actual_small_graph_training_reload_and_fresh_artifacts(tmp_path):
     graph, settings = small_settings(tmp_path)
     output = tmp_path / "diagnostic"
     report = run_distance_diagnostic(output, settings)
-    assert report["training"]["epochs"] == 1 and report["max_optimizer_steps"] == 10
+    assert report["training"]["epochs"] == 1 and report["max_optimizer_steps"] == 1
+    assert report["training"]["sequence_length"] == 10
+    assert report["training"]["optimizer_steps"] == 1
+    assert report["training"]["supervised_decisions"] == report["max_supervised_decisions"] == 10
     assert all(math.isfinite(loss) for loss in report["training"]["losses"])
     assert not report["stellar_acceptance_gate_passed"]
     if not report["training_fit_gate_passed"]:
@@ -224,6 +228,11 @@ def test_actual_small_graph_training_reload_and_fresh_artifacts(tmp_path):
         assert report["unseen"]["status"] == "evaluated"
     policy, _ = load_checkpoint(output / "training/checkpoint.pt", graph, content_pack=report["content"])
     assert policy.hidden_size == 16
+    assert report["content"]["training_contract"]["sequence_length"] == 10
+    old_content = {**report["content"], "diagnostic": "distance-diagnostic-v1"}
+    old_content.pop("training_contract")
+    with pytest.raises(ValueError, match="content-pack"):
+        load_checkpoint(output / "training/checkpoint.pt", graph, content_pack=old_content)
     with pytest.raises(ValueError, match="content-pack"):
         load_checkpoint(
             output / "training/checkpoint.pt", graph, content_pack=load_knowledge_pack().content_identity()
@@ -253,11 +262,20 @@ def test_success_branch_evaluates_unseen_only_after_seen_passes(tmp_path, monkey
     def fake_train(episodes, graph, output, **kwargs):
         calls.append("train")
         assert len(episodes) == 1 and kwargs["epochs"] == 1
+        assert kwargs["sequence_length"] == 10
         assert len(kwargs["validation_episodes"]) == 2
         assert all(
             e[0]["observation"]["instruction"] != TEMPLATES["test"] for e in kwargs["validation_episodes"]
         )
-        return {"epochs": 1, "losses": [0.0], "elapsed_seconds": 0.0, "process_peak_rss_bytes": 0}
+        return {
+            "epochs": 1,
+            "losses": [0.0],
+            "elapsed_seconds": 0.0,
+            "process_peak_rss_bytes": 0,
+            "sequence_length": 10,
+            "optimizer_steps": 1,
+            "supervised_decisions": 10,
+        }
 
     real_closed_loop = module.closed_loop
 
@@ -325,6 +343,9 @@ def test_failed_fit_holds_back_unseen_and_classifies_failure(
             "losses": [1.0],
             "elapsed_seconds": 0.0,
             "process_peak_rss_bytes": 0,
+            "sequence_length": 10,
+            "optimizer_steps": 1,
+            "supervised_decisions": 10,
         },
     )
     monkeypatch.setattr(module, "load_checkpoint", lambda *args, **kwargs: (FailingPolicy(), {}))

@@ -337,9 +337,28 @@ mod tests {
         receive_until(&process, &mut app, |app| app.state["status"] == "completed");
         assert_eq!(app.action["action_source"], "scripted_expert");
         assert!(!app.histories["sensory"].is_empty());
+        let completed_sequence = app.sequence;
+        let completed_summary = app.summary.clone();
+        process
+            .send(RuntimeCommand::new(CommandKind::Abort, json!({})))
+            .unwrap();
+        receive_until(&process, &mut app, |app| app.sequence > completed_sequence);
+        assert_eq!(app.state["status"], "completed");
+        assert_eq!(app.summary, completed_summary);
+        // Aborting a genuinely active episode must still report interruption.
+        process
+            .send(RuntimeCommand::new(
+                CommandKind::Start,
+                json!({
+                    "policy":"expert", "seed":4, "paused":true, "artifact_dir":artifacts,
+                }),
+            ))
+            .unwrap();
+        receive_until(&process, &mut app, |app| app.state["status"] == "paused");
         process
             .send(RuntimeCommand::new(CommandKind::Abort, json!({})))
             .unwrap();
         receive_until(&process, &mut app, |app| app.state["status"] == "aborted");
+        assert_eq!(app.summary["completed"], false);
     }
 }

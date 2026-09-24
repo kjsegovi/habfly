@@ -25,7 +25,7 @@ from .train import peak_process_rss_bytes, prepare_output_directory, train_behav
 
 
 class DistanceDiagnosticConfig(Contract):
-    name: Literal["distance-diagnostic-v1"] = "distance-diagnostic-v1"
+    name: Literal["distance-diagnostic-v2"] = "distance-diagnostic-v2"
     graph: Path = Path("data/processed/graphs-v2/graph-2000")
     knowledge_pack: Path | None = None
     training_cases: int = Field(default=4, ge=1, le=4)
@@ -290,6 +290,11 @@ def run_distance_diagnostic(output, settings):
             "required_fields": ["distance"],
             "dataset_splits": splits,
             "max_steps": settings.max_steps,
+            "training_contract": {
+                "sequence_length": 10,
+                "observation_encoding": "per_control_v2",
+                "loss_masking": "legal_actions_and_expert_kind_targets_v1",
+            },
         }
         manifest = {
             "version": 1,
@@ -299,14 +304,20 @@ def run_distance_diagnostic(output, settings):
             "settings": settings.model_dump(mode="json"),
             "verification": verification,
             "expert_gate_passed": True,
-            "max_optimizer_steps": settings.training_cases * 10 * settings.epochs,
+            "max_optimizer_steps": settings.training_cases * settings.epochs,
+            "max_supervised_decisions": settings.training_cases * 10 * settings.epochs,
             "unseen_policy_evaluation_requires_fit_gate": True,
         }
         write_json(directory / "manifest.json", manifest)
         validation = [
             episode for pair in zip(episodes["calibration"], episodes["development"]) for episode in pair
         ]
-        status("training", max_optimizer_steps=manifest["max_optimizer_steps"], epochs=settings.epochs)
+        status(
+            "training",
+            max_optimizer_steps=manifest["max_optimizer_steps"],
+            max_supervised_decisions=manifest["max_supervised_decisions"],
+            epochs=settings.epochs,
+        )
         training = train_behavioral_cloning(
             episodes["train"],
             graph,
@@ -316,6 +327,7 @@ def run_distance_diagnostic(output, settings):
             seed=settings.seed,
             hidden_size=settings.hidden_size,
             content_pack=content,
+            sequence_length=10,
         )
         policy, _ = load_checkpoint(directory / "training/checkpoint.pt", graph, content_pack=content)
         status("evaluating_training_fit")
@@ -364,13 +376,23 @@ def run_distance_diagnostic(output, settings):
             "seen": seen,
             "unseen": unseen,
             "training": {
-                k: training[k] for k in ("epochs", "losses", "elapsed_seconds", "process_peak_rss_bytes")
+                k: training[k]
+                for k in (
+                    "epochs",
+                    "losses",
+                    "elapsed_seconds",
+                    "process_peak_rss_bytes",
+                    "sequence_length",
+                    "optimizer_steps",
+                    "supervised_decisions",
+                )
             },
             "content": content,
             "graph_hash": manifest["graph_hash"],
             "graph_nodes": manifest["graph_nodes"],
             "budget": settings.model_dump(mode="json"),
             "max_optimizer_steps": manifest["max_optimizer_steps"],
+            "max_supervised_decisions": manifest["max_supervised_decisions"],
             "elapsed_seconds": time.perf_counter() - started,
             "process_peak_rss_bytes": peak_process_rss_bytes(),
             "note": "Stage reach counts independent observed milestones, not an enforced action order. Failure does not identify a root cause by itself. No retry or budget increase.",

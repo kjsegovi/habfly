@@ -12,6 +12,7 @@ pub struct App {
     pub state: Value,
     pub observation: Value,
     pub action: Value,
+    pub action_control: Value,
     pub result: Value,
     pub neural: Value,
     pub summary: Value,
@@ -22,6 +23,7 @@ pub struct App {
     pub connected: bool,
     pub paused: bool,
     pub controls_scroll: u16,
+    pub observation_scroll: u16,
     pub focused_panel: u8,
 }
 
@@ -31,6 +33,7 @@ impl Default for App {
             state: json!({"status":"waiting for runtime"}),
             observation: json!({}),
             action: json!({}),
+            action_control: json!({}),
             result: json!({}),
             neural: json!({}),
             summary: json!({}),
@@ -44,6 +47,7 @@ impl Default for App {
             connected: false,
             paused: false,
             controls_scroll: 0,
+            observation_scroll: 0,
             focused_panel: 0,
         }
     }
@@ -69,11 +73,13 @@ impl App {
         if event.run_id != self.run_id && event.run_id.is_some() {
             self.observation = json!({});
             self.action = json!({});
+            self.action_control = json!({});
             self.result = json!({});
             self.neural = json!({});
             self.summary = json!({});
             self.histories.values_mut().for_each(VecDeque::clear);
             self.controls_scroll = 0;
+            self.observation_scroll = 0;
         }
         self.run_id = event.run_id;
         self.sequence = Some(event.sequence);
@@ -99,6 +105,15 @@ impl App {
             }
             EventKind::ActionProposed => {
                 self.action = payload.get("action").unwrap_or(&payload).clone();
+                self.action_control = self.observation["controls"]
+                    .as_array()
+                    .and_then(|controls| {
+                        controls
+                            .iter()
+                            .find(|c| c["id"] == *action_target(&self.action))
+                    })
+                    .cloned()
+                    .unwrap_or_else(|| json!({}));
                 if let Some(source) = payload.get("action_source") {
                     self.action["action_source"] = source.clone();
                 }

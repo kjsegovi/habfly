@@ -1,4 +1,4 @@
-name: distance-diagnostic-v1
+name: distance-diagnostic-v2
 graph: data/processed/graphs-v2/graph-2000
 training_cases: 4
 calibration_cases: 2

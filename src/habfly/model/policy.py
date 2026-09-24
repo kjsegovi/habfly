@@ -13,6 +13,8 @@ import torch
 from torch import nn
 from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
 
+from .measurement_identity import MeasurementIdentityPointer, measurement_request
+from .source_request import SourceRequestPointer
 from .tokenizer import CharacterTokenizer
 
 ACTION_KINDS = ("CLICK", "TYPE", "SELECT", "HOVER", "DRAG", "SCROLL", "KEYPRESS", "WAIT", "STOP")
@@ -22,6 +24,28 @@ def as_dict(value: Any) -> dict:
     if isinstance(value, dict):
         return value
     return value.model_dump(mode="json")
+
+
+def legal_action_mask(observation: Any, device=None) -> torch.Tensor:
+    permitted = {"WAIT", "STOP"}
+    for control in as_dict(observation).get("controls", []):
+        control = as_dict(control)
+        if control.get("enabled", True):
+            permitted.update(control.get("actions", ["CLICK"]))
+    return torch.tensor([kind in permitted for kind in ACTION_KINDS], dtype=torch.bool, device=device)
+
+
+def legal_target_mask(observation: Any, kind: str, device=None, *, width=None) -> torch.Tensor:
+    controls = as_dict(observation).get("controls", [])
+    width = max(1, len(controls)) if width is None else width
+    if width < len(controls):
+        raise ValueError("Target mask cannot truncate visible controls")
+    mask = torch.zeros(width, dtype=torch.bool, device=device)
+    if kind not in ("WAIT", "STOP"):
+        for index, control in enumerate(controls):
+            control = as_dict(control)
+            mask[index] = control.get("enabled", True) and kind in control.get("actions", ["CLICK"])
+    return mask
 
 
 def observation_text(observation: Any) -> str:
@@ -53,13 +77,13 @@ def control_text(control: Any) -> str:
     return text + (" " + data["surface"] if data.get("surface") in ("spreadsheet", "calculation") else "")
 
 
-def calculation_sections(state):
+def structured_sections(state, *, prefix="calculation", max_characters=899):
     """Bound every structured reference/result independently, without dropping fields."""
     parts = []
 
     def visit(path, value):
         serialized = f"{path}: {json.dumps(value, sort_keys=True)}"
-        if len(serialized) < 900:
+        if len(serialized) <= max_characters:
             parts.append(serialized)
         elif isinstance(value, dict):
             for key, child in value.items():
@@ -68,11 +92,15 @@ def calculation_sections(state):
             for index, child in enumerate(value):
                 visit(f"{path}.{index}", child)
         else:
-            raise ValueError("Knowledge reference exceeds a section token budget")
+            raise ValueError("Structured observation exceeds a section token budget")
 
     for key, value in state.items():
-        visit(f"calculation.{key}", value)
+        visit(f"{prefix}.{key}", value)
     return parts
+
+
+def calculation_sections(state):
+    return structured_sections(state)
 
 
 def graph_fingerprint(graph: Any) -> str:
@@ -140,6 +168,8 @@ class ConnectomePolicy(nn.Module):
         propagation_steps: int = 3,
         max_answer_length: int = 20,
         tokenizer: CharacterTokenizer | None = None,
+        observation_encoding: str = "pooled_text_v2",
+        selection_mode: str = "characters",
     ):
         super().__init__()
         if hidden_size < 4 or propagation_steps < 1 or max_answer_length < 2:
@@ -149,6 +179,18 @@ class ConnectomePolicy(nn.Module):
         self.propagation_steps = propagation_steps
         self.max_answer_length = max_answer_length
         self.tokenizer = tokenizer or CharacterTokenizer()
+        if observation_encoding not in ("pooled_text_v2", "structured_tool_v3"):
+            raise ValueError("Unknown observation encoding")
+        if selection_mode not in (
+            "characters",
+            "option_pointer_v1",
+            "option_pointer_semantic_v2",
+            "measurement_identity_v1",
+            "measurement_source_v2",
+        ):
+            raise ValueError("Unknown selection mode")
+        self.observation_encoding = observation_encoding
+        self.selection_mode = selection_mode
         self.graph_hash = graph_fingerprint(graph)
         self.action_temperature = 1.0
         self.target_temperature = 1.0
@@ -169,6 +211,11 @@ class ConnectomePolicy(nn.Module):
         self.value_chars = nn.Linear(hidden_size, self.tokenizer.vocab_size)
         self.answer_chars = nn.Linear(hidden_size, self.tokenizer.vocab_size)
         self.chart_encoder = ChartEncoder(hidden_size)
+        # Conditional construction keeps strict loading of old checkpoints unchanged.
+        if selection_mode in ("measurement_identity_v1", "measurement_source_v2"):
+            self.measurement_identity = MeasurementIdentityPointer(self.tokenizer, hidden_size)
+            if selection_mode == "measurement_source_v2":
+                self.measurement_identity.source_request = SourceRequestPointer(self.tokenizer, hidden_size)
         n = len(graph.body_ids)
         if not n or np.asarray(graph.node_features).shape != (n, 5):
             raise ValueError("Graph must have nodes and five biological node features")
@@ -204,7 +251,81 @@ class ConnectomePolicy(nn.Module):
             "propagation_steps": self.propagation_steps,
             "max_answer_length": self.max_answer_length,
             "architecture": type(self).__name__,
+            "observation_encoding": self.observation_encoding,
+            "selection_mode": self.selection_mode,
         }
+
+    def tool_features(self, observation: Any) -> torch.Tensor:
+        """Visible state occupancy, not expert stages, answers, or next-action rules.
+
+        Keep field identity rather than averaging mostly static reference prose.
+        This supplements character input at sensory neurons, never at the readout.
+        """
+        obs = as_dict(observation)
+        state, values = obs.get("calculation") or {}, obs.get("values") or {}
+        results = {k: v for k, v in state.get("results", {}).items() if v.get("valid")}
+        bindings = state.get("bindings") or {}
+        last = state.get("last_operation") or {}
+        features = (
+            [
+                bool(state.get("operation")),
+                bool(state.get("parameter")),
+                bool(state.get("source")),
+                bool(bindings),
+                bool(results),
+                state.get("pending_result") in results,
+                state.get("selected_result") in results,
+                bool(state.get("destination")),
+                bool(values.get("answers")),
+                bool(values.get("units")),
+                bool(state.get("tool_error")),
+                last.get("kind") == "calculate",
+                last.get("kind") == "copy",
+                min(len(bindings), 16) / 16,
+                min(len(results), 16) / 16,
+                min(len(values.get("required_fields", [])), 16) / 16,
+            ]
+            if state
+            else [0.0] * 16
+        )
+        vector = self.embedding.weight.new_tensor(features)
+        if self.hidden_size >= 16:
+            return torch.nn.functional.pad(vector, (0, self.hidden_size - 16))
+        # Small synthetic test models: fixed folding, no learned neuron embeddings.
+        folded = vector.new_zeros(self.hidden_size)
+        return folded.scatter_add(0, torch.arange(16, device=self.device) % self.hidden_size, vector)
+
+    def option_scores(self, observation: Any, control: Any, pooled: torch.Tensor) -> torch.Tensor:
+        """Rank actual visible options using their visible metadata, not generated IDs."""
+        obs, target = as_dict(observation), as_dict(control)
+        if self.selection_mode in ("measurement_identity_v1", "measurement_source_v2"):
+            request = measurement_request(obs, target)
+            if request is not None:
+                return self.measurement_identity([request], pooled)[0]
+        state = obs.get("calculation") or {}
+        sources = {**(obs.get("values") or {}).get("measurements", {}), **state.get("results", {})}
+        texts = []
+        for option in target.get("options", []):
+            metadata = sources.get(option)
+            if metadata is not None and self.selection_mode == "option_pointer_semantic_v2":
+                # Stellar source selection asks WHICH quantity/reference to use.
+                # Magnitudes remain visible to the core/tool, but are not source identity.
+                metadata = {k: v for k, v in metadata.items() if k in ("kind", "unit", "source", "valid")}
+            # Opaque IDs stay selectable, but their meaning comes from visible data.
+            texts.append(json.dumps(metadata, sort_keys=True) if metadata is not None else str(option))
+        if not texts or any(len(text) + 2 > self.tokenizer.max_length for text in texts):
+            raise ValueError("Option text is empty or exceeds a section token budget")
+        keys = self.encode_text(texts)
+        # The option list's order and opaque IDs must not change the query.
+        context = self.encode_text(
+            [f"{target.get('role', '')} {target.get('label', '')} {target.get('surface', '')}"]
+        )
+        query = (
+            self.value_decoder(context, pooled)
+            if self.selection_mode == "option_pointer_semantic_v2"
+            else self.target_query(pooled + context)
+        )
+        return (keys * query).sum(-1) / self.hidden_size**0.5
 
     def encode_text(self, texts: list[str]) -> torch.Tensor:
         tokens, lengths = self.tokenizer.batch(texts, self.device)
@@ -217,6 +338,21 @@ class ConnectomePolicy(nn.Module):
         # later controls are long; the final state retains terminal ordering.
         pooled = (sequence * mask[:, :, None]).sum(1) / lengths.to(self.device)[:, None]
         return (pooled + state[-1]) / 2
+
+    def encode_controls(self, controls: Sequence[Any], *, target=False) -> torch.Tensor:
+        """One vector per control; never truncate the list or an individual field."""
+        groups = []
+        for control in controls:
+            data = {k: v for k, v in as_dict(control).items() if k != "id"}
+            text = control_text(control) if target else f"control: {json.dumps(data, sort_keys=True)}"
+            budget = self.tokenizer.max_length - 2
+            groups.append(
+                [text]
+                if len(text) <= budget
+                else structured_sections(data, prefix="control", max_characters=budget)
+            )
+        encoded = self.encode_text([text for group in groups for text in group])
+        return torch.stack([part.mean(0) for part in encoded.split([len(group) for group in groups])])
 
     def decode_characters(
         self,
@@ -266,7 +402,7 @@ class ConnectomePolicy(nn.Module):
     ) -> PolicyOutput:
         if not observations:
             raise ValueError("Observation batch cannot be empty")
-        fields = ("instruction", "values", "feedback", "chart", "progress", "controls")
+        fields = ("instruction", "values", "feedback", "chart", "progress")
         visible = [visible_observation(o) for o in observations]
         sections = [
             f"{key}: {json.dumps(o.get(key, ''), ensure_ascii=False, default=str)}"
@@ -275,7 +411,18 @@ class ConnectomePolicy(nn.Module):
         ]
         # Separate budgets prevent a long chart or control list from dropping
         # instructions, progress, or field values at a global string boundary.
-        encoded = self.encode_text(sections).reshape(len(observations), len(fields), self.hidden_size).mean(1)
+        encoded_fields = self.encode_text(sections).reshape(len(observations), len(fields), self.hidden_size)
+        control_vectors = torch.stack(
+            [
+                self.encode_controls(o["controls"]).mean(0)
+                if o["controls"]
+                else self.encode_text(["controls: []"])[0]
+                for o in visible
+            ]
+        )
+        # Keep the controls' one-sixth share of the base observation, independent
+        # of control count/order, while allocating every control its own budget.
+        encoded = (encoded_fields.sum(1) + control_vectors) / (len(fields) + 1)
         # Each measurement/result gets its own token budget. Do not hide the
         # sheet state past a single 1024-character serialized-observation limit.
         for index, observation in enumerate(visible):
@@ -322,6 +469,8 @@ class ConnectomePolicy(nn.Module):
             chart_pixels = None
         if chart_pixels is not None:
             encoded = encoded + self.chart_encoder(chart_pixels.to(self.device))
+        if self.observation_encoding == "structured_tool_v3":
+            encoded = encoded + torch.stack([self.tool_features(o) for o in observations])
         state, pooled = self.propagate(encoded, state)
         controls = [as_dict(observation).get("controls", []) for observation in observations]
         max_targets = max(1, max(map(len, controls)))
@@ -329,7 +478,7 @@ class ConnectomePolicy(nn.Module):
         query = self.target_query(pooled)
         for row, candidates in enumerate(controls):
             if candidates:
-                keys = self.encode_text([control_text(c) for c in candidates])
+                keys = self.encode_controls(candidates, target=True)
                 scores = (keys * query[row]).sum(-1) / self.hidden_size**0.5
                 enabled = torch.tensor(
                     [as_dict(c).get("enabled", True) for c in candidates], device=self.device
@@ -385,22 +534,12 @@ class ConnectomePolicy(nn.Module):
             )
         output = self([observation], state, chart_pixels)
         controls = as_dict(observation).get("controls", [])
-        permitted = {"WAIT", "STOP"}
-        for control in controls:
-            if as_dict(control).get("enabled", True):
-                permitted.update(as_dict(control).get("actions", ["CLICK"]))
-        action_mask = torch.tensor([kind in permitted for kind in ACTION_KINDS], device=self.device)
+        action_mask = legal_action_mask(observation, self.device)
         ap = (output.action_logits[0].masked_fill(~action_mask, -1e9) / self.action_temperature).softmax(-1)
         choose = lambda p: int(torch.multinomial(p, 1)) if sample else int(p.argmax())
         action_index = choose(ap)
         kind = ACTION_KINDS[action_index]
-        target_mask = torch.tensor(
-            [
-                as_dict(c).get("enabled", True) and kind in as_dict(c).get("actions", ["CLICK"])
-                for c in controls
-            ],
-            device=self.device,
-        )
+        target_mask = legal_target_mask(observation, kind, self.device)
         target_logits = output.target_logits[0].clone()
         if controls and kind not in ("WAIT", "STOP"):
             target_logits[: len(controls)] = target_logits[: len(controls)].masked_fill(~target_mask, -1e9)
@@ -409,21 +548,12 @@ class ConnectomePolicy(nn.Module):
         target = as_dict(controls[target_index]) if controls else {}
         value = self.tokenizer.decode(output.typed_value_logits[0].argmax(-1).tolist())
         if kind == "SELECT" and target.get("options"):
-            # Choose a legal option by the character decoder's mean log likelihood.
-            candidates = target["options"]
-            labels = torch.zeros(
-                (len(candidates), self.max_answer_length), device=self.device, dtype=torch.long
-            )
-            for row, option in enumerate(candidates):
-                ids = self.tokenizer.encode(option, self.max_answer_length + 1)[1:]
-                labels[row, : len(ids)] = torch.tensor(ids, device=self.device)
-            logits = self.decode_characters(
-                output.pooled.expand(len(candidates), -1), self.value_decoder, self.value_chars, labels
-            )
-            token_scores = logits.log_softmax(-1).gather(-1, labels[:, :, None]).squeeze(-1)
-            lengths = labels.ne(0).sum(-1)
-            scores = (token_scores * labels.ne(0)).sum(-1) / lengths
-            value = candidates[int(scores.argmax())]
+            if self.selection_mode != "characters":
+                value = target["options"][
+                    int(self.option_scores(observation, target, output.pooled).argmax())
+                ]
+            else:
+                value = self.select_characters(target["options"], output.pooled)
         fields = {
             "kind": kind,
             "target": target.get("id") if kind not in ("WAIT", "STOP") else None,
@@ -453,6 +583,20 @@ class ConnectomePolicy(nn.Module):
             }
         )
         return action, output.state, diagnostics
+
+    def select_characters(self, candidates, pooled):
+        # Choose a legal option by the character decoder's mean log likelihood.
+        labels = torch.zeros((len(candidates), self.max_answer_length), device=self.device, dtype=torch.long)
+        for row, option in enumerate(candidates):
+            ids = self.tokenizer.encode(option, self.max_answer_length + 1)[1:]
+            labels[row, : len(ids)] = torch.tensor(ids, device=self.device)
+        logits = self.decode_characters(
+            pooled.expand(len(candidates), -1), self.value_decoder, self.value_chars, labels
+        )
+        token_scores = logits.log_softmax(-1).gather(-1, labels[:, :, None]).squeeze(-1)
+        lengths = labels.ne(0).sum(-1)
+        scores = (token_scores * labels.ne(0)).sum(-1) / lengths
+        return candidates[int(scores.argmax())]
 
 
 class TopologyFreePolicy(ConnectomePolicy):

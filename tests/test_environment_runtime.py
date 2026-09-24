@@ -129,6 +129,20 @@ def test_runtime_jsonl_recovers_malformed_messages():
     assert sum(e["event"] == "error" for e in events) == 2
 
 
+def test_quitting_finished_runtime_preserves_original_completion(tmp_path):
+    runtime = Runtime(io.StringIO())
+    runtime.command({"command": "start", "payload": {"artifact_dir": str(tmp_path)}})
+    while runtime.status == "running":
+        runtime.tick()
+    assert runtime.status == "completed"
+    path = runtime.trace_path
+    runtime.command({"command": "abort"})
+    runtime.command({"command": "abort"})
+    assert runtime.status == "completed"
+    summaries = [e.payload for e in read_trace(path) if e.event == "episode_summary"]
+    assert len(summaries) == 1 and summaries[0]["completed"]
+
+
 def test_trace_rejects_malformed_and_nonmonotonic_events(tmp_path):
     trace = tmp_path / "bad.jsonl"
     event = {"event": "state", "sequence": 1, "payload": {}}

@@ -25,6 +25,6 @@ class DistanceDiagnosticEnv(LocalStellarEnv):
 
     def observe(self):
         observation = super().observe()
-        observation.instruction = TEMPLATES[self.case["split"]]
+        observation.instruction = self.case.get("instruction", TEMPLATES[self.case["split"]])
         observation.progress["diagnostic"] = "distance_v1"
         return observation

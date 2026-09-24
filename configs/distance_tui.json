@@ -1,0 +1,13 @@
+{
+  "task": "distance",
+  "environment": "simulator",
+  "policy": "checkpoint",
+  "calculation_backend": "local",
+  "graph": "data/processed/graphs-v2/graph-2000",
+  "checkpoint": "experiments/distance-aliases-002/training/checkpoint.pt",
+  "dataset": "experiments/distance-aliases-002",
+  "seed": 2400000,
+  "paused": true,
+  "interval": 0.8,
+  "artifact_dir": "experiments/manual-distance"
+}

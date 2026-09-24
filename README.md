@@ -2,7 +2,19 @@
 
 A local connectome-constrained learning experiment, with a Python/PyTorch engine and a Rust terminal interface. Develop on the Mac, train larger graphs on the Framework, and watch decisions and recurrent neuron activity beside a Playwright-controlled browser.
 
-The runnable demo uses an explicitly **synthetic star-analysis environment**. Its scripted expert completes one, three, or 30 stars. A learned agent completing the actual HabWorlds Project is a later acceptance gate: the exact lesson content, local application, fresh account, and trained policy are still required.
+The default runnable demo uses an explicitly **synthetic star-analysis environment**. Its scripted expert completes one, three, or 30 stars. A separate **learned distance-only checkpoint** now passes 100/100 held-out local tasks and is ready for a [manual TUI trial](docs/distance-manual-test.md). Neither demo establishes learned completion of the actual HabWorlds Project.
+
+## Try the learned distance checkpoint
+
+With this machine's existing graph, dependencies and verified checkpoint:
+
+```sh
+.venv/bin/python scripts/distance_tui.py
+```
+
+It starts paused. **n** steps, **Space** resumes, **v** cycles panels, **q** exits.
+No browser, spreadsheet or training is started. See the [manual guide and actual
+scores](docs/distance-manual-test.md) for scope, expected results and replay.
 
 ## Run the terminal demo
 
@@ -70,9 +82,10 @@ deterministic tool performs arithmetic. No spreadsheet app, credentials, network
 vector database, or downloaded model is required after dependencies are installed.
 The [bounded smoke report](docs/stellar-local-verification.md) records passing
 tool/expert gates but **0/100 learned task completions**. The later pilot completed
-**0/16 development cases**. The next bounded investigation is the
-[distance-only diagnostic](docs/distance-diagnostic.md), not additional full-task
-training or a browser run.
+**0/16 development cases**. Subsequent [distance-only investigations](docs/distance-diagnostic.md)
+now produce a checkpoint completing **100/100 new distance cases**. This does not
+change those earlier full-task failures. Use the [learned distance TUI guide](docs/distance-manual-test.md)
+for the current manual checkpoint; full-task training and browser acceptance remain later gates.
 
 [Google Sheets stellar training](docs/stellar-training.md) remains an optional,
 explicit backend with separate datasets/checkpoints and no local fallback. Neither

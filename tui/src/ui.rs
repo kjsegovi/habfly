@@ -47,7 +47,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
             draw_controls(frame, app, sections[1]);
             draw_action(frame, app, sections[2]);
         }
-        frame.render_widget(Paragraph::new("v overview/neural/controls/full observation · ↑/↓ controls · n step\ns start · space pause/resume · a abort · t save trace · q quit"), rows[2]);
+        frame.render_widget(Paragraph::new("v overview/neural/controls/full observation · ↑/↓ scroll · n step\ns start · space pause/resume · a abort · t save trace · q quit"), rows[2]);
         return;
     }
     let rows = Layout::vertical([
@@ -88,17 +88,56 @@ pub fn draw(frame: &mut Frame, app: &App) {
         .style(Style::default().fg(Color::DarkGray)), rows[3]);
 }
 
+fn option_text(app: &App, option: &serde_json::Value) -> String {
+    let Some(id) = option.as_str() else {
+        return display(option);
+    };
+    let measurement = &app.observation["values"]["measurements"][id];
+    let result = &app.observation["calculation"]["results"][id];
+    let item = if measurement.is_object() {
+        measurement
+    } else {
+        result
+    };
+    if item.is_object() {
+        format!(
+            "{}: {} {} {} ({})",
+            display(option),
+            display(&item["kind"]),
+            display(&item["value"]),
+            display(&item["unit"]),
+            if measurement.is_object() {
+                display(&item["source"])
+            } else {
+                format!("valid {}", display(&item["valid"]))
+            }
+        )
+    } else {
+        display(option)
+    }
+}
+
 fn draw_observation(frame: &mut Frame, app: &App, area: Rect) {
     let sheet = &app.observation["spreadsheet"];
     let calc = &app.observation["calculation"];
+    let measurements = app.observation["values"]["measurements"]
+        .as_object()
+        .map(|items| {
+            items
+                .keys()
+                .map(|key| option_text(app, &serde_json::Value::String(key.clone())))
+                .collect::<Vec<_>>()
+                .join("\n")
+        })
+        .unwrap_or_default();
     let extra = if calc.get("calculation_mode").is_some() {
-        format!("\nLocal tool: {}\nOperation: {} · {}\nInputs: {}\nSelected input: {} ← {} · bindings {}\nResults: {}\nCopy: {} → {}\nLast: {}\nTool error: {}\nMeasurements: {}\nAnswers: {} · units {}",
+        format!("\nLocal tool: {}\nOperation: {} · {}\nInputs: {}\nSelected input: {} ← {} · bindings {}\nMeasurements:\n{}\nResults: {}\nCopy: {} → {}\nLast: {}\nTool error: {}\nAnswers: {} · units {}",
             display(&calc["calculation_mode"]), display(&calc["operation"]),
             display(&calc["reference_card"]["description"]), display(&calc["reference_card"]["inputs"]),
-            display(&calc["parameter"]), display(&calc["source"]), display(&calc["bindings"]),
+            display(&calc["parameter"]), display(&calc["source"]), display(&calc["bindings"]), measurements,
             display(&calc["results"]), display(&calc["selected_result"]), display(&calc["destination"]),
             display(&calc["last_operation"]), display(&calc["tool_error"]),
-            display(&app.observation["values"]["measurements"]), display(&app.observation["values"]["answers"]),
+            display(&app.observation["values"]["answers"]),
             display(&app.observation["values"]["units"]))
     } else if sheet.get("calculation_mode").is_some() {
         format!("\nSheet: {} · generation {}\nInput: {} → {} · bindings {}\nResult: {} → {}\nValues: {}\nLast: {}\nMeasurements: {}\nAnswers: {} · units {}",
@@ -111,18 +150,29 @@ fn draw_observation(frame: &mut Frame, app: &App, area: Rect) {
     } else {
         String::new()
     };
+    let text = format!(
+        "{}\nFeedback: {}\nProgress: {}\nChart: {} · crop {}{}",
+        display(&app.observation["instruction"]),
+        display(&app.observation["feedback"]),
+        display(&app.observation["progress"]),
+        display(&app.observation["chart"]),
+        display(&app.observation["chart_crop"]),
+        extra
+    );
+    let paragraph = Paragraph::new(text).wrap(Wrap { trim: false });
+    let lines = paragraph.line_count(area.width.saturating_sub(2).max(1));
+    let max_scroll = lines
+        .saturating_sub(area.height.saturating_sub(2) as usize)
+        .min(u16::MAX as usize) as u16;
+    let scroll = if app.focused_panel == 3 {
+        app.observation_scroll.min(max_scroll)
+    } else {
+        0
+    };
     frame.render_widget(
-        Paragraph::new(format!(
-            "{}\nFeedback: {}\nProgress: {}\nChart: {} · crop {}{}",
-            display(&app.observation["instruction"]),
-            display(&app.observation["feedback"]),
-            display(&app.observation["progress"]),
-            display(&app.observation["chart"]),
-            display(&app.observation["chart_crop"]),
-            extra
-        ))
-        .block(Block::bordered().title("Observation"))
-        .wrap(Wrap { trim: false }),
+        paragraph
+            .scroll((scroll, 0))
+            .block(Block::bordered().title("Observation")),
         area,
     );
 }
@@ -164,7 +214,16 @@ fn draw_controls(frame: &mut Frame, app: &App, area: Rect) {
     let mut lines = Vec::new();
     if let Some(controls) = controls {
         for control in controls {
-            let chosen = selected.is_some() && control["id"].as_str() == selected;
+            // IDs are observation-local. Retain the last chosen control by a
+            // unique visible label/role/surface, never by parsing an opaque ID.
+            let same_control = |c: &&serde_json::Value| {
+                !app.action_control["label"].is_null()
+                    && ["label", "role", "surface"]
+                        .iter()
+                        .all(|key| c[*key] == app.action_control[*key])
+            };
+            let chosen = (selected.is_some() && control["id"].as_str() == selected)
+                || (same_control(&control) && controls.iter().filter(same_control).count() == 1);
             let enabled = control["enabled"].as_bool() != Some(false);
             let marker = if chosen { "▶" } else { " " };
             let mut text = format!(
@@ -191,16 +250,28 @@ fn draw_controls(frame: &mut Frame, app: &App, area: Rect) {
             lines.push(Line::from(Span::styled(text, style)));
             if let Some(options) = control["options"].as_array() {
                 if !options.is_empty() {
-                    lines.push(Line::from(format!(
-                        "    options: {}",
-                        display(&control["options"])
-                    )));
+                    if control["label"] == "Measurement or result" {
+                        for option in options {
+                            lines.push(Line::from(format!("    {}", option_text(app, option))));
+                        }
+                    } else {
+                        lines.push(Line::from(format!(
+                            "    options: {}",
+                            display(&control["options"])
+                        )));
+                    }
                 }
             }
         }
     }
     if lines.is_empty() {
-        lines.push(Line::from("Waiting for visible controls"));
+        lines.push(Line::from(
+            if app.observation["progress"]["task_completed"] == true {
+                "No controls: task completed"
+            } else {
+                "Waiting for visible controls"
+            },
+        ));
     }
     let max_scroll = lines
         .len()
@@ -216,8 +287,9 @@ fn draw_controls(frame: &mut Frame, app: &App, area: Rect) {
 
 fn draw_action(frame: &mut Frame, app: &App, area: Rect) {
     let text = format!(
-        "{} → {} · value {}\nAction {}\nTarget {}\nSource {} · reward parts {}",
+        "{} → {} [{}] · value {}\nAction {}\nTarget {}\nSource {} · reward parts {}",
         display(&app.action["kind"]),
+        display(&app.action_control["label"]),
         display(action_target(&app.action)),
         display(&app.action["value"]),
         confidence(&app.action, "action_confidence"),
@@ -330,6 +402,67 @@ mod tests {
             let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
             terminal.draw(|frame| draw(frame, &App::default())).unwrap();
         }
+    }
+
+    #[test]
+    fn measurement_options_and_last_target_survive_observation_local_ids() {
+        let mut app = App {
+            action: serde_json::json!({"target":"2:source"}),
+            action_control: serde_json::json!({"label":"Measurement or result", "role":"combobox", "surface":"calculation"}),
+            observation: serde_json::json!({"controls":[{"id":"3:source", "label":"Measurement or result",
+                "role":"combobox", "surface":"calculation", "options":["m1"]}],
+                "values":{"measurements":{"m1":{"kind":"parallax", "value":0.1, "unit":"arcsec", "source":"current star"}}}}),
+            ..App::default()
+        };
+        let mut terminal = Terminal::new(TestBackend::new(100, 20)).unwrap();
+        terminal
+            .draw(|frame| draw_controls(frame, &app, frame.area()))
+            .unwrap();
+        let text: String = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(text.contains("▶ 3:source"));
+        assert!(text.contains("m1: parallax 0.1 arcsec (current star)"));
+        let mut duplicate = app.observation["controls"][0].clone();
+        duplicate["id"] = serde_json::json!("3:ambiguous");
+        app.observation["controls"]
+            .as_array_mut()
+            .unwrap()
+            .push(duplicate);
+        terminal
+            .draw(|frame| draw_controls(frame, &app, frame.area()))
+            .unwrap();
+        assert!(!terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .any(|c| c.symbol() == "▶"));
+    }
+
+    #[test]
+    fn full_observation_scroll_reaches_wrapped_final_lines() {
+        let app = App {
+            focused_panel: 3,
+            observation_scroll: u16::MAX,
+            observation: serde_json::json!({"instruction":"a long instruction with wrapping ".repeat(200),
+                "feedback":"final feedback", "progress":{"task_completed":true}, "chart_crop":"last-line-marker"}),
+            ..App::default()
+        };
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        terminal.draw(|frame| draw(frame, &app)).unwrap();
+        let text: String = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(text.contains("last-line-marker"));
     }
 
     #[test]
