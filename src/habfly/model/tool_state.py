@@ -17,6 +17,8 @@ QUANTITIES = (
 )
 UNITS = ("arcsec", "W/m2", "nm", "ly", "Lsun", "K", "Msun", "Rsun", "Gyr")
 STATE_WIDTH = len(QUANTITIES) * 10 + 4
+STAR_CLASSES = ("main_sequence", "white_dwarf", "giant")
+TASK_STATE_WIDTH = STATE_WIDTH + len(QUANTITIES) + len(STAR_CLASSES)
 OPTION_WIDTH = len(QUANTITIES) + len(UNITS)
 CONTROL_LABELS = (
     "Calculation",
@@ -92,3 +94,19 @@ def option_features(observation, option):
     kind = metadata.get("kind", option)
     unit = metadata.get("unit", option)
     return [kind == q for q in QUANTITIES] + [unit == u for u in UNITS]
+
+
+def task_state_features(observation):
+    """v5 adds only public assignment metadata, never applicability/action rules.
+
+    Unknown/missing class is all-zero, distinct from any supplied class. Required
+    fields encode what the assignment displays, not what the model should do next.
+    Keep v4 unchanged so previous checkpoints retain their original inputs.
+    """
+    values = observation.get("values") or {}
+    required = values.get("required_fields") or []
+    return (
+        state_features(observation)
+        + [q in required for q in QUANTITIES]
+        + [values.get("star_class") == cls for cls in STAR_CLASSES]
+    )

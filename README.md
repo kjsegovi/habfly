@@ -6,7 +6,31 @@ The default runnable demo uses an explicitly **synthetic star-analysis environme
 
 ## Try the learned local checkpoints
 
-The newest checkpoint adds **temperature** to distance and luminosity. After a
+The newest checkpoint adds **main-sequence radius** to distance, luminosity,
+temperature and mass. It passed **100/100 new held-out local tasks**, reusing both
+luminosity and temperature for radius. Supplied giant/white-dwarf classes skip
+mass and radius; classification itself is not learned. Start the paused TUI with:
+
+```sh
+.venv/bin/python scripts/radius_tui.py
+```
+
+See the [radius manual guide](docs/radius-manual-test.md) for the 51-action
+five-calculation path, 31-action skip path, exact answers and offline replay.
+
+The preserved mass checkpoint adds **main-sequence mass** to distance, luminosity and
+temperature. It passed **100/100 new held-out local tasks**: 50 main-sequence
+stars calculate mass from luminosity; 25 white dwarfs and 25 giants skip it.
+Classification is supplied, not learned. Start the paused TUI with:
+
+```sh
+.venv/bin/python scripts/mass_tui.py
+```
+
+See the [mass manual guide](docs/mass-manual-test.md) for the 40-action mass path,
+31-action skip path, expected values, preserved experiments and replay.
+
+The preserved three-calculation checkpoint adds **temperature** to distance and luminosity. After a
 source-language repair, it passed **100/100 new held-out local tasks**. Start the
 paused three-calculation TUI with:
 
@@ -108,7 +132,9 @@ tool/expert gates but **0/100 learned task completions**. The later pilot comple
 **0/16 development cases**. Subsequent [distance-only investigations](docs/distance-diagnostic.md)
 now produce a checkpoint completing **100/100 new distance cases**. This does not
 change those earlier full-task failures. Use the [learned distance TUI guide](docs/distance-manual-test.md)
-for the current manual checkpoint; full-task training and browser acceptance remain later gates.
+for the distance checkpoint, or the [radius TUI guide](docs/radius-manual-test.md)
+for the latest conditional five-calculation checkpoint. Full-task training and
+browser acceptance remain later gates.
 
 [Google Sheets stellar training](docs/stellar-training.md) remains an optional,
 explicit backend with separate datasets/checkpoints and no local fallback. Neither

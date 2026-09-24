@@ -29,7 +29,6 @@ def main():
     socket.socket.connect = socket.socket.connect_ex = socket.create_connection = deny
     SpreadsheetAdapter.__init__ = deny
     payload = json.loads(args.profile.read_text())
-    expected_steps = 10 if payload["task"] == "distance" else workflow_spec(payload["task"]).steps
     manifest = json.loads((Path(payload["dataset"]) / "manifest.json").read_text())
     checkpoint = Path(payload["checkpoint"])
     before = hashlib.sha256(checkpoint.read_bytes()).hexdigest()
@@ -48,6 +47,11 @@ def main():
                         "artifact_dir": str(args.output / "traces"),
                     },
                 }
+            )
+            expected_steps = (
+                10
+                if payload["task"] == "distance"
+                else workflow_spec(payload["task"]).expected_steps(runtime.env.case)
             )
             assert runtime.status == "paused" and runtime.env.steps == 0
             runtime.command({"command": "step"})

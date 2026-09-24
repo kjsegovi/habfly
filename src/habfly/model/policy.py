@@ -20,9 +20,11 @@ from .tool_state import (
     CONTROL_LABELS,
     OPTION_WIDTH,
     STATE_WIDTH,
+    TASK_STATE_WIDTH,
     control_features,
     option_features,
     state_features,
+    task_state_features,
 )
 
 ACTION_KINDS = ("CLICK", "TYPE", "SELECT", "HOVER", "DRAG", "SCROLL", "KEYPRESS", "WAIT", "STOP")
@@ -188,7 +190,12 @@ class ConnectomePolicy(nn.Module):
         self.propagation_steps = propagation_steps
         self.max_answer_length = max_answer_length
         self.tokenizer = tokenizer or CharacterTokenizer()
-        if observation_encoding not in ("pooled_text_v2", "structured_tool_v3", "structured_tool_v4"):
+        if observation_encoding not in (
+            "pooled_text_v2",
+            "structured_tool_v3",
+            "structured_tool_v4",
+            "structured_tool_v5",
+        ):
             raise ValueError("Unknown observation encoding")
         if selection_mode not in (
             "characters",
@@ -228,6 +235,8 @@ class ConnectomePolicy(nn.Module):
             self.control_projection = nn.Linear(len(CONTROL_LABELS), hidden_size, bias=False)
         if observation_encoding == "structured_tool_v4":
             self.tool_state_projection = nn.Linear(STATE_WIDTH, hidden_size)
+        if observation_encoding == "structured_tool_v5":
+            self.tool_state_projection = nn.Linear(TASK_STATE_WIDTH, hidden_size)
         if selection_mode == "measurement_result_v3":
             self.option_projection = nn.Linear(OPTION_WIDTH, hidden_size, bias=False)
             self.option_query = nn.Linear(hidden_size, hidden_size, bias=False)
@@ -511,6 +520,9 @@ class ConnectomePolicy(nn.Module):
             encoded = encoded + torch.stack([self.tool_features(o) for o in observations])
         if self.observation_encoding == "structured_tool_v4":
             features = encoded.new_tensor([state_features(as_dict(o)) for o in observations])
+            encoded = encoded + self.tool_state_projection(features)
+        if self.observation_encoding == "structured_tool_v5":
+            features = encoded.new_tensor([task_state_features(as_dict(o)) for o in observations])
             encoded = encoded + self.tool_state_projection(features)
         state, pooled = self.propagate(encoded, state)
         controls = [as_dict(observation).get("controls", []) for observation in observations]

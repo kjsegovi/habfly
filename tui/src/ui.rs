@@ -131,8 +131,9 @@ fn draw_observation(frame: &mut Frame, app: &App, area: Rect) {
         })
         .unwrap_or_default();
     let extra = if calc.get("calculation_mode").is_some() {
-        format!("\nLocal tool: {}\nOperation: {} · {}\nInputs: {}\nSelected input: {} ← {} · bindings {}\nMeasurements:\n{}\nResults: {}\nCopy: {} → {}\nLast: {}\nTool error: {}\nAnswers: {} · units {}",
-            display(&calc["calculation_mode"]), display(&calc["operation"]),
+        format!("\nLocal tool: {}\nSupplied class: {} · required fields {}\nOperation: {} · {}\nInputs: {}\nSelected input: {} ← {} · bindings {}\nMeasurements:\n{}\nResults: {}\nCopy: {} → {}\nLast: {}\nTool error: {}\nAnswers: {} · units {}",
+            display(&calc["calculation_mode"]), display(&app.observation["values"]["star_class"]),
+            display(&app.observation["values"]["required_fields"]), display(&calc["operation"]),
             display(&calc["reference_card"]["description"]), display(&calc["reference_card"]["inputs"]),
             display(&calc["parameter"]), display(&calc["source"]), display(&calc["bindings"]), measurements,
             display(&calc["results"]), display(&calc["selected_result"]), display(&calc["destination"]),
@@ -607,6 +608,75 @@ mod tests {
             option_text(&app, &serde_json::json!("r3")),
             "r3: temperature 13668.719339622641 K (valid true)"
         );
+    }
+
+    #[test]
+    fn mass_chain_shows_supplied_class_luminosity_binding_and_solar_mass() {
+        let app = App {
+            focused_panel: 3,
+            observation: serde_json::json!({"instruction":"Main-sequence mass", "calculation": {
+                "calculation_mode":"local_tool_assisted", "operation":"mass",
+                "reference_card":{"description":"Main-sequence mass from luminosity", "inputs":{"luminosity":{"unit":"Lsun"}}},
+                "parameter":"luminosity", "source":"r2", "bindings":{"luminosity":"r2"},
+                "results":{"r4":{"kind":"mass","value":4,"unit":"Msun","valid":true}},
+                "selected_result":"r4", "destination":"mass", "tool_error":null},
+                "values":{"star_class":"main_sequence", "required_fields":["distance","luminosity","temperature","mass"],
+                    "answers":{"mass":4}, "units":{"mass":"Msun"}}}),
+            ..App::default()
+        };
+        let mut terminal = Terminal::new(TestBackend::new(150, 45)).unwrap();
+        terminal.draw(|frame| draw(frame, &app)).unwrap();
+        let text: String = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        for expected in [
+            "Supplied class: main_sequence",
+            "Main-sequence mass from luminosity",
+            "luminosity ← r2",
+            "r4 → mass",
+            "Msun",
+        ] {
+            assert!(text.contains(expected), "Missing {expected}");
+        }
+    }
+
+    #[test]
+    fn radius_chain_shows_both_result_bindings_and_solar_radius() {
+        let app = App {
+            focused_panel: 3,
+            observation: serde_json::json!({"instruction":"Main-sequence radius", "calculation": {
+                "calculation_mode":"local_tool_assisted", "operation":"radius",
+                "reference_card":{"description":"Radius from luminosity and temperature", "inputs":{"luminosity":{"unit":"Lsun"},"temperature":{"unit":"K"}}},
+                "parameter":"temperature", "source":"r3", "bindings":{"luminosity":"r2","temperature":"r3"},
+                "results":{"r5":{"kind":"radius","value":8,"unit":"Rsun","valid":true}},
+                "selected_result":"r5", "destination":"radius", "tool_error":null},
+                "values":{"star_class":"main_sequence", "required_fields":["distance","luminosity","temperature","mass","radius"],
+                    "answers":{"radius":8}, "units":{"radius":"Rsun"}}}),
+            ..App::default()
+        };
+        let mut terminal = Terminal::new(TestBackend::new(150, 45)).unwrap();
+        terminal.draw(|frame| draw(frame, &app)).unwrap();
+        let text: String = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        for expected in [
+            "Supplied class: main_sequence",
+            "Radius from luminosity and temperature",
+            "temperature ← r3",
+            "\"luminosity\":\"r2\"",
+            "r5 → radius",
+            "Rsun",
+        ] {
+            assert!(text.contains(expected), "Missing {expected}");
+        }
     }
 
     #[test]

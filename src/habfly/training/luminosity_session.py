@@ -52,9 +52,23 @@ def load_chain_session(directory, checkpoint, pack, seed, *, task):
         source_hash(cases) != identity["sha256"]
         or len(cases) != identity["count"]
         or [c["seed"] for c in cases] != identity["seeds"]
-        or any(c["required"] != content["required_fields"] for c in cases)
+        or any(c["required"] != workflow.required_for(c["star_class"]) for c in cases)
     ):
         raise ValueError(f"Manual {task} dataset mismatch")
+    if workflow.applicability_metrics:
+        expected = {cls: workflow.required_for(cls) for cls in ("main_sequence", "white_dwarf", "giant")}
+        groups = rollout.get("by_class", {})
+        if (
+            content.get("required_fields_by_class") != expected
+            or set(groups) != set(expected)
+            or any(
+                group["requested"] <= 0
+                or group["completed"] / group["requested"] < 0.9
+                or any(group.get(key) != group["requested"] for key in workflow.applicability_metrics)
+                for group in groups.values()
+            )
+        ):
+            raise ValueError(f"{task.title()} session requires passed chain gates for every supplied class")
     selected = next((c for c in cases if c["seed"] == seed), None)
     if selected is None:
         raise ValueError(f"Choose a manual seed from {identity['seeds']}")

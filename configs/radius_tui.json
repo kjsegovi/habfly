@@ -1,0 +1,13 @@
+{
+  "task": "radius",
+  "environment": "simulator",
+  "policy": "checkpoint",
+  "calculation_backend": "local",
+  "graph": "data/processed/graphs-v2/graph-2000",
+  "checkpoint": "experiments/radius-001/training/checkpoint.pt",
+  "dataset": "experiments/radius-001",
+  "seed": 7500000,
+  "paused": true,
+  "interval": 0.8,
+  "artifact_dir": "experiments/manual-radius"
+}

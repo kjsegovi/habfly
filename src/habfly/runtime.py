@@ -13,7 +13,7 @@ from pydantic import Field
 
 from .contracts import Contract, Observation, RuntimeCommand, RuntimeEvent, StepResult, task_completed
 
-LOCAL_CHECKPOINT_TASKS = {"distance", "luminosity", "temperature"}
+LOCAL_CHECKPOINT_TASKS = {"distance", "luminosity", "temperature", "mass", "radius"}
 CALCULATION_TASKS = LOCAL_CHECKPOINT_TASKS | {"stellar"}
 
 
@@ -29,7 +29,9 @@ class RunOptions(Contract):
     browser_config: Path | None = None
     paused: bool = False
     interval: float = Field(default=0.2, ge=0, le=10)
-    task: Literal["mini_habworlds", "stellar", "distance", "luminosity", "temperature"] = "mini_habworlds"
+    task: Literal["mini_habworlds", "stellar", "distance", "luminosity", "temperature", "mass", "radius"] = (
+        "mini_habworlds"
+    )
     spreadsheet_config: Path | None = None
     calculation_backend: Literal["local", "google_sheets"] | None = None
     knowledge_pack: Path | None = None

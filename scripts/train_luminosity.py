@@ -49,8 +49,12 @@ def read(path):
 def recognition_records(seed, *, task="luminosity"):
     rng, records = random.Random(seed), []
     quantities, units = ("parallax", "flux", "wavelength", "distance"), ("arcsec", "W/m2", "nm", "ly")
-    if task == "temperature":
+    if task in {"temperature", "mass", "radius"}:
         quantities, units = (*quantities, "luminosity"), (*units, "Lsun")
+    if task in {"mass", "radius"}:
+        quantities, units = (*quantities, "temperature"), (*units, "K")
+    if task == "radius":
+        quantities, units = (*quantities, "mass"), (*units, "Msun")
     fields = list(
         itertools.product(
             quantities,
@@ -86,7 +90,7 @@ def expert_episodes(calculator, cases, workflow=None):
         )
         if (
             not summary["completed"]
-            or summary["steps"] != workflow.steps
+            or summary["steps"] != workflow.expected_steps(case)
             or any(summary.get(k, 0) for k in ERRORS)
         ):
             raise ValueError(f"Expert chain failed: {summary}")
@@ -100,6 +104,8 @@ def train(args, graph, calculator):
         raise ValueError("Use a fresh experiment directory; prior artifacts are preserved")
     if not 1 <= args.updates <= 800:
         raise ValueError("One invocation is capped at 800 full-sequence optimizer updates")
+    if not 0 <= args.recognition_updates <= 200:
+        raise ValueError("Recognition is capped at 200 optimizer updates")
     parent_content = read(args.parent.parent.parent / "report.json")["content"]
     parent, _ = load_checkpoint(args.parent, graph, content_pack=parent_content)
     if (
@@ -116,17 +122,22 @@ def train(args, graph, calculator):
         tokenizer=parent.tokenizer,
         **{
             **config,
-            "observation_encoding": "structured_tool_v4",
+            "observation_encoding": args.observation_encoding,
             "selection_mode": "measurement_result_v3",
             "control_encoding": args.control_encoding,
         },
     )
-    incompatible = policy.load_state_dict(parent.state_dict(), strict=False)
-    allowed = ("tool_state_projection.", "option_projection.", "option_query.", "control_projection.")
-    if incompatible.unexpected_keys or any(
-        not name.startswith(allowed) for name in incompatible.missing_keys
-    ):
-        raise ValueError(f"Unexpected parent migration: {incompatible}")
+    if args.observation_encoding == "structured_tool_v5":
+        from habfly.training.task_state import migrate_task_state
+
+        migrate_task_state(parent, policy)
+    else:
+        incompatible = policy.load_state_dict(parent.state_dict(), strict=False)
+        allowed = ("tool_state_projection.", "option_projection.", "option_query.", "control_projection.")
+        if incompatible.unexpected_keys or any(
+            not name.startswith(allowed) for name in incompatible.missing_keys
+        ):
+            raise ValueError(f"Unexpected parent migration: {incompatible}")
     calculator.verify()
     cases = {
         s: workflow.cases(s, n, calculator, offset=args.offset)
@@ -136,6 +147,9 @@ def train(args, graph, calculator):
         for key in ("seed", "case_id", "instruction"):
             if {c[key] for c in cases[a]} & {c[key] for c in cases[b]}:
                 raise ValueError("Dataset split overlap")
+        for key in ("parallax", "flux", "wavelength"):
+            if {c["inputs"][key] for c in cases[a]} & {c["inputs"][key] for c in cases[b]}:
+                raise ValueError("Numeric dataset split overlap")
     args.output.mkdir(parents=True, exist_ok=False)
     content = {
         **calculator.pack.content_identity(),
@@ -147,6 +161,10 @@ def train(args, graph, calculator):
             for s, rows in cases.items()
         },
     }
+    if workflow.applicability_metrics:
+        content["required_fields_by_class"] = {
+            cls: workflow.required_for(cls) for cls in ("main_sequence", "white_dwarf", "giant")
+        }
     parent_hash = file_hash(args.parent)
     write_json(
         args.output / "manifest.json",
@@ -156,8 +174,9 @@ def train(args, graph, calculator):
             "graph_hash": policy.graph_hash,
             "graph_nodes": len(graph.body_ids),
             "graph_edges": len(graph.edge_src),
+            "observation_encoding": args.observation_encoding,
             "budget": {
-                "recognition_updates": 200,
+                "recognition_updates": args.recognition_updates,
                 "sequence_updates": args.updates,
                 "training_cases": 8,
                 "seed": 0,
@@ -198,7 +217,7 @@ def train(args, graph, calculator):
     contexts = torch.randn(32, 16).clamp(-1, 1)
     optimizer = torch.optim.AdamW([p for p in policy.parameters() if p.requires_grad], lr=0.003)
     rng, recognition_losses = random.Random(0), []
-    for update in range(200):
+    for update in range(args.recognition_updates):
         batch = rng.sample(records, 12)
         pooled = contexts[[rng.randrange(len(contexts)) for _ in batch]]
         logits = torch.stack(policy.measurement_identity(batch, pooled))
@@ -211,6 +230,8 @@ def train(args, graph, calculator):
         optimizer.step()
         recognition_losses.append(float(loss.detach()))
     recognition = evaluate_identity(policy, recognition_development, contexts)
+    if not args.recognition_updates and recognition["accuracy"]["exact"] != 1:
+        raise ValueError("Skipping recognition requires a perfect frozen recognition check")
     print(f"Recognition: {recognition['accuracy']}", flush=True)
     trainable = (
         "tool_state_projection.",
@@ -264,7 +285,9 @@ def train(args, graph, calculator):
     # Calibration is separate, does not change greedy decisions or train weights.
     policy.requires_grad_(False)
     calibrate_policy(
-        policy, episodes_to_examples(episodes["calibration"]), episode_lengths=[workflow.steps] * 16
+        policy,
+        episodes_to_examples(episodes["calibration"]),
+        episode_lengths=[len(e) for e in episodes["calibration"]],
     )
     checkpoint = args.output / "training/checkpoint.pt"
     save_checkpoint(
@@ -303,8 +326,8 @@ def train(args, graph, calculator):
         "calibration": restored.calibration,
         "seconds": time.perf_counter() - started,
         "peak_rss_bytes": peak_process_rss_bytes(),
-        "development_gate_passed": clean(development, 16, steps=workflow.steps)
-        and clean(seen, 8, steps=workflow.steps),
+        "development_gate_passed": clean(development, 16, steps=workflow.expected_steps)
+        and clean(seen, 8, steps=workflow.expected_steps),
         "final_test_opened": False,
     }
     write_json(args.output / "report.json", report)
@@ -374,6 +397,17 @@ def evaluate(args, graph, calculator):
         and len(result["episodes"]) == 100
         and not any(result[k] for k in ERRORS)
     )
+    if workflow.applicability_metrics:
+        passed = (
+            passed
+            and all(
+                group["requested"] > 0
+                and group["completed"] / group["requested"] >= 0.9
+                and all(group[key] == group["requested"] for key in workflow.applicability_metrics)
+                for group in result["by_class"].values()
+            )
+            and set(result["by_class"]) == {"main_sequence", "white_dwarf", "giant"}
+        )
     final_report = {
         "scope": workflow.scope,
         "chain_gate_passed": passed,
@@ -398,10 +432,14 @@ def main(default_task="luminosity"):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("mode", choices=("train", "evaluate"))
     parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--task", choices=("luminosity", "temperature"), default=default_task)
+    parser.add_argument(
+        "--task", choices=("luminosity", "temperature", "mass", "radius"), default=default_task
+    )
     parser.add_argument("--parent", type=Path)
     parser.add_argument("--updates", type=int, default=400)
+    parser.add_argument("--recognition-updates", type=int, default=200)
     parser.add_argument("--offset", type=int, default=0)
+    parser.add_argument("--observation-encoding", choices=("structured_tool_v4", "structured_tool_v5"))
     parser.add_argument(
         "--control-encoding",
         choices=("characters", "semantic_tool_v1"),
@@ -410,6 +448,9 @@ def main(default_task="luminosity"):
     )
     args = parser.parse_args()
     args.parent = args.parent or workflow_spec(args.task).parent
+    args.observation_encoding = args.observation_encoding or (
+        "structured_tool_v5" if args.task in {"mass", "radius"} else "structured_tool_v4"
+    )
     socket.socket = socket.create_connection = deny
     SpreadsheetAdapter.__init__ = deny
     torch.set_num_threads(1)

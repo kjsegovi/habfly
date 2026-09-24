@@ -86,6 +86,25 @@ mod tests {
     }
 
     #[test]
+    fn python_tool_values_keep_binary64_precision_when_parsed_and_replayed() {
+        let line = r#"{"version":1,"event":"observation","sequence":1,"payload":{"luminosity":0.21876686379107962,"mass":0.6477736790802984,"flux":3.25546e-11}}"#;
+        let event = parse_event(line).unwrap();
+        for (key, expected) in [
+            ("luminosity", 0.21876686379107962_f64),
+            ("mass", 0.6477736790802984_f64),
+            ("flux", 3.25546e-11_f64),
+        ] {
+            assert_eq!(
+                event.payload[key].as_f64().unwrap().to_bits(),
+                expected.to_bits()
+            );
+        }
+        let serialized = serde_json::to_string(&event).unwrap();
+        assert!(serialized.contains("0.21876686379107962"));
+        assert_eq!(parse_event(&serialized).unwrap().payload, event.payload);
+    }
+
+    #[test]
     fn malformed_and_incompatible_events_fail_without_panicking() {
         for line in [
             "not json",

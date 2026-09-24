@@ -11,7 +11,7 @@ from habfly.training.luminosity_session import load_chain_session
 from habfly.training.stellar import write_json
 
 
-@pytest.fixture(params=("luminosity", "temperature"))
+@pytest.fixture(params=("luminosity", "temperature", "mass", "radius"))
 def session(tmp_path, request):
     pack = load_knowledge_pack()
     workflow = workflow_spec(request.param)
@@ -25,6 +25,10 @@ def session(tmp_path, request):
             "manual": {"sha256": source_hash(cases), "count": 2, "seeds": [c["seed"] for c in cases]}
         },
     }
+    if workflow.applicability_metrics:
+        content["required_fields_by_class"] = {
+            cls: workflow.required_for(cls) for cls in ("main_sequence", "white_dwarf", "giant")
+        }
     # Loader checks identity only; actual checkpoint loading is separately tested.
     checkpoint = tmp_path / "fixture-checkpoint"
     checkpoint.write_bytes(b"synthetic test artifact, not a learned model")
@@ -53,6 +57,15 @@ def session(tmp_path, request):
                 "tool_errors": 0,
                 "api_failures": 0,
                 "infrastructure_failures": 0,
+                "by_class": {
+                    cls: {
+                        "requested": n,
+                        "completed": n,
+                        "mass_applicability_correct": n,
+                        "radius_applicability_correct": n,
+                    }
+                    for cls, n in (("main_sequence", 50), ("white_dwarf", 25), ("giant", 25))
+                },
             },
         },
     )
@@ -99,4 +112,28 @@ def test_reject_unready_chain(session, mutation):
         final["optimizer_updates"] = 1
     write_json(path, final)
     with pytest.raises(ValueError, match="passed chain gates"):
+        loader(directory, checkpoint, pack, cases[0]["seed"])
+
+
+def test_mass_branch_promotion_guard(session):
+    directory, checkpoint, pack, cases, loader = session
+    if loader.keywords["task"] not in {"mass", "radius"}:
+        pytest.skip("Conditional-calculation applicability guard")
+    path = directory / "final/report.json"
+    final = json.loads(path.read_text())
+    final["closed_loop"]["by_class"]["giant"]["mass_applicability_correct"] = 24
+    write_json(path, final)
+    with pytest.raises(ValueError, match="every supplied class"):
+        loader(directory, checkpoint, pack, cases[0]["seed"])
+
+
+def test_radius_branch_promotion_guard(session):
+    directory, checkpoint, pack, cases, loader = session
+    if loader.keywords["task"] != "radius":
+        pytest.skip("Radius-specific applicability guard")
+    path = directory / "final/report.json"
+    final = json.loads(path.read_text())
+    final["closed_loop"]["by_class"]["giant"].pop("radius_applicability_correct")
+    write_json(path, final)
+    with pytest.raises(ValueError, match="every supplied class"):
         loader(directory, checkpoint, pack, cases[0]["seed"])

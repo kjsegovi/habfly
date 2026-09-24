@@ -13,7 +13,8 @@ ERRORS = ("invalid_actions", "tool_errors", "api_failures", "infrastructure_fail
 
 
 def audit_chain(case, trajectory):
-    reused = correct_flux = correct_wavelength = exact_copy = 0
+    reused = correct_flux = correct_wavelength = exact_copy = mass_reused = mass_attempts = 0
+    radius_reused = radius_attempts = 0
     selections, correct = Counter(), Counter()
     for step in trajectory:
         before, action, after = step["observation"], step["action"], step["result"]["observation"]
@@ -21,6 +22,29 @@ def audit_chain(case, trajectory):
         key = control.get("id", "").partition(":")[2]
         state = after["calculation"]
         sources = visible_sources(after)
+        if key == "operation" and action["value"] == "radius":
+            radius_attempts += 1
+        if key == "execute" and state["operation"] == "radius" and not state["tool_error"]:
+            radius_reused += int(
+                all(
+                    state["bindings"].get(key) in before["calculation"]["results"]
+                    and sources.get(state["bindings"].get(key), {}).get("kind") == key
+                    and sources.get(state["bindings"].get(key), {}).get("unit") == unit
+                    and sources.get(state["bindings"].get(key), {}).get("source") == "current star"
+                    for key, unit in (("luminosity", "Lsun"), ("temperature", "K"))
+                )
+            )
+        if key == "operation" and action["value"] == "mass":
+            mass_attempts += 1
+        if key == "execute" and state["operation"] == "mass" and not state["tool_error"]:
+            luminosity = state["bindings"].get("luminosity")
+            result = sources.get(luminosity, {})
+            mass_reused += int(
+                luminosity in before["calculation"]["results"]
+                and result.get("kind") == "luminosity"
+                and result.get("unit") == "Lsun"
+                and result.get("source") == "current star"
+            )
         if key == "execute" and state["operation"] == "luminosity" and not state["tool_error"]:
             distance = state["bindings"].get("distance")
             flux = sources.get(state["bindings"].get("flux"), {})
@@ -66,6 +90,10 @@ def audit_chain(case, trajectory):
         "current_star_flux_uses": correct_flux,
         "current_star_wavelength_uses": correct_wavelength,
         "exact_copies": exact_copy,
+        "mass_luminosity_reuses": mass_reused,
+        "mass_operation_selections": mass_attempts,
+        "radius_result_pair_reuses": radius_reused,
+        "radius_operation_selections": radius_attempts,
         "selection_attempts": dict(selections),
         "selection_correct": dict(correct),
     }
@@ -85,6 +113,17 @@ def rollout(policy, calculator, cases, directory, *, environment=LuminosityEnv):
         if trajectory:
             summary.update(audit_chain(case, trajectory))
         summary["required_fields"] = list(case["required"])
+        summary["star_class"] = case["star_class"]
+        summary["mass_applicability_correct"] = (
+            summary.get("mass_luminosity_reuses") == 1 and summary.get("mass_operation_selections") == 1
+            if "mass" in case["required"]
+            else summary.get("mass_operation_selections") == 0
+        )
+        summary["radius_applicability_correct"] = (
+            summary.get("radius_result_pair_reuses") == 1 and summary.get("radius_operation_selections") == 1
+            if "radius" in case["required"]
+            else summary.get("radius_operation_selections") == 0
+        )
         episodes.append(summary)
     attempts, correct = Counter(), Counter()
     for row in episodes:
@@ -101,8 +140,23 @@ def rollout(policy, calculator, cases, directory, *, environment=LuminosityEnv):
             and e.get("current_star_flux_uses") == 1
             and e.get("exact_copies") == len(e["required_fields"])
             and ("temperature" not in e["required_fields"] or e.get("current_star_wavelength_uses") == 1)
+            and e["mass_applicability_correct"]
+            and e["radius_applicability_correct"]
             for e in episodes
         ),
+    }
+    report["by_class"] = {
+        cls: {
+            "requested": sum(e["star_class"] == cls for e in episodes),
+            "completed": sum(e["star_class"] == cls and e["completed"] for e in episodes),
+            "mass_applicability_correct": sum(
+                e["star_class"] == cls and e["mass_applicability_correct"] for e in episodes
+            ),
+            "radius_applicability_correct": sum(
+                e["star_class"] == cls and e["radius_applicability_correct"] for e in episodes
+            ),
+        }
+        for cls in sorted({e["star_class"] for e in episodes})
     }
     write_json(directory / "report.json", report)
     return report
@@ -114,5 +168,5 @@ def clean(report, count, *, steps=22):
         and report["chained"] == count
         and len(report["episodes"]) == count
         and not any(report[key] for key in ERRORS)
-        and all(e["steps"] == steps for e in report["episodes"])
+        and all(e["steps"] == (steps(e) if callable(steps) else steps) for e in report["episodes"])
     )
