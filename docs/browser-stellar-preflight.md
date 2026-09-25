@@ -36,6 +36,8 @@ Two score-widget frames share that URL; they must not be identified by URL alone
 The probe gives them separate snapshot-local IDs. Those IDs are evidence labels,
 not executable browser targets or selectors.
 
+<a id="observed-controls-and-remaining-gaps"></a>
+
 ## Visible field map and missing capabilities
 
 | Student-visible field | Observed value/options | Bridge requirement |

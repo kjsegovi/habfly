@@ -3,8 +3,12 @@
 This is a transfer check of the frozen `temperature-source-003` checkpoint on
 the real 2,000-node graph, not a new training run or full HabWorlds attempt.
 The supervised Devaem run (`c9dbdac18d8d491bb3336d309832162e`) completed automatic
-setup, all 31 learned decisions, and all three verified copies. Autonomous
-execution remains a separate live reliability gate. No classification is supplied or inferred.
+setup, all 31 learned decisions, and all three verified copies. The subsequent
+autonomous reliability batches passed 3/3 and 10/10 runs; the latter covered ten
+star names and nine distinct measurement sets, with thirty verified entries and
+no recorded errors. No classification is supplied or inferred. These checks do
+not establish course grading, persistence, or full-star completion. The separate
+[color checkpoint](color-checkpoint.md) is not yet promoted or enabled here.
 
 ## Run
 

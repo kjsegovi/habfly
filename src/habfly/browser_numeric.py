@@ -352,6 +352,7 @@ class NumericJournal:
 
 
 class NumericSession:
+    ALLOW_COLOR_SELECTION = False
     MAX_WRITES = 3
     MAX_CALCULATIONS = 6
     MAX_SECONDS = 900
@@ -395,7 +396,9 @@ class NumericSession:
         report = inspect_page(self.page, self.config)
         if report["ignored_frame_urls"]:
             raise BrowserSafetyStop("unknown_visible_frame")
-        mapping = map_stellar_capture(report, capture_sha256=screen_identity(report))
+        mapping = map_stellar_capture(
+            report, capture_sha256=screen_identity(report), allow_color_selection=self.ALLOW_COLOR_SELECTION
+        )
         frames = [
             f for f in self.page.frames if f.url == SIMULATION_URL and _visible_frame(f, self.page.main_frame)
         ]

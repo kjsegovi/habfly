@@ -181,6 +181,7 @@ class ConnectomePolicy(nn.Module):
         observation_encoding: str = "pooled_text_v2",
         selection_mode: str = "characters",
         control_encoding: str = "characters",
+        color_readout: str = "linear_v1",
     ):
         super().__init__()
         if hidden_size < 4 or propagation_steps < 1 or max_answer_length < 2:
@@ -196,6 +197,7 @@ class ConnectomePolicy(nn.Module):
             "structured_tool_v4",
             "structured_tool_v5",
             "structured_tool_v6",
+            "structured_color_v1",
         ):
             raise ValueError("Unknown observation encoding")
         if selection_mode not in (
@@ -208,8 +210,13 @@ class ConnectomePolicy(nn.Module):
         ):
             raise ValueError("Unknown selection mode")
         self.observation_encoding = observation_encoding
+        if color_readout not in ("linear_v1", "ordinal_v2") or (
+            color_readout != "linear_v1" and observation_encoding != "structured_color_v1"
+        ):
+            raise ValueError("Incompatible color readout")
+        self.color_readout = color_readout
         self.selection_mode = selection_mode
-        if control_encoding not in ("characters", "semantic_tool_v1"):
+        if control_encoding not in ("characters", "semantic_tool_v1", "semantic_color_v1"):
             raise ValueError("Unknown control encoding")
         self.control_encoding = control_encoding
         self.graph_hash = graph_fingerprint(graph)
@@ -234,6 +241,20 @@ class ConnectomePolicy(nn.Module):
         self.chart_encoder = ChartEncoder(hidden_size)
         if control_encoding == "semantic_tool_v1":
             self.control_projection = nn.Linear(len(CONTROL_LABELS), hidden_size, bias=False)
+        if control_encoding == "semantic_color_v1":
+            from habfly.color_reference import COLOR_CONTROLS
+
+            self.control_projection = nn.Linear(len(COLOR_CONTROLS), hidden_size, bias=False)
+        if observation_encoding == "structured_color_v1":
+            from habfly.color_reference import COLOR_LABELS
+
+            self.color_projection = nn.Linear(3, hidden_size)
+            if color_readout == "ordinal_v2":
+                from .color_head import OrdinalColorHead
+
+                self.color_head = OrdinalColorHead(hidden_size, len(COLOR_LABELS))
+            else:
+                self.color_head = nn.Linear(hidden_size, len(COLOR_LABELS))
         if observation_encoding == "structured_tool_v4":
             self.tool_state_projection = nn.Linear(STATE_WIDTH, hidden_size)
         if observation_encoding in {"structured_tool_v5", "structured_tool_v6"}:
@@ -284,6 +305,8 @@ class ConnectomePolicy(nn.Module):
             "observation_encoding": self.observation_encoding,
             "selection_mode": self.selection_mode,
             "control_encoding": self.control_encoding,
+            # Omit the default to preserve old numeric and linear-color manifests.
+            **({"color_readout": self.color_readout} if self.color_readout != "linear_v1" else {}),
         }
 
     def tool_features(self, observation: Any) -> torch.Tensor:
@@ -329,6 +352,17 @@ class ConnectomePolicy(nn.Module):
     def option_scores(self, observation: Any, control: Any, pooled: torch.Tensor) -> torch.Tensor:
         """Rank actual visible options using their visible metadata, not generated IDs."""
         obs, target = as_dict(observation), as_dict(control)
+        if self.observation_encoding == "structured_color_v1":
+            from habfly.color_reference import COLOR_CONTROL, COLOR_LABELS
+
+            if target.get("label") == COLOR_CONTROL:
+                options = target.get("options", [])
+                if len(options) != len(COLOR_LABELS) or set(options) != set(COLOR_LABELS):
+                    raise ValueError("Color option inventory mismatch")
+                # Semantic option identity, not menu position. All logits depend
+                # on the biological readout; no reference oracle is called here.
+                logits = self.color_head(pooled)[0]
+                return logits[[COLOR_LABELS.index(option) for option in options]]
         if self.selection_mode in (
             "measurement_identity_v1",
             "measurement_source_v2",
@@ -530,6 +564,11 @@ class ConnectomePolicy(nn.Module):
         if self.observation_encoding in {"structured_tool_v5", "structured_tool_v6"}:
             features = encoded.new_tensor([task_state_features(as_dict(o)) for o in observations])
             encoded = encoded + self.tool_state_projection(features)
+        if self.observation_encoding == "structured_color_v1":
+            from habfly.color_reference import color_features
+
+            features = encoded.new_tensor([color_features(as_dict(o)) for o in observations])
+            encoded = encoded + self.color_projection(features)
         state, pooled = self.propagate(encoded, state)
         controls = [as_dict(observation).get("controls", []) for observation in observations]
         max_targets = max(1, max(map(len, controls)))
@@ -540,6 +579,13 @@ class ConnectomePolicy(nn.Module):
                 keys = self.encode_controls(candidates, target=True)
                 if self.control_encoding == "semantic_tool_v1":
                     features = keys.new_tensor([control_features(as_dict(c)) for c in candidates])
+                    keys = keys + self.control_projection(features)
+                if self.control_encoding == "semantic_color_v1":
+                    from habfly.color_reference import COLOR_CONTROLS
+
+                    features = keys.new_tensor(
+                        [[as_dict(c).get("label") == label for label in COLOR_CONTROLS] for c in candidates]
+                    )
                     keys = keys + self.control_projection(features)
                 scores = (keys * query[row]).sum(-1) / self.hidden_size**0.5
                 enabled = torch.tensor(

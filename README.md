@@ -43,7 +43,29 @@ bounded sequential reliability batch with visible Chromium and console progress:
 The batch stops on the first failure, records every run plus `report.json`, and
 reports duplicate stars. Fresh browser contexts are not newly provisioned accounts.
 There is no retraining, Save, spending, deletion, assessment, score update or submission.
-Autonomous execution is fixture-tested; its live reliability gate remains separate.
+The bounded live numeric reliability batches passed **3/3** and **10/10** runs.
+The ten-run batch covered ten star names and nine distinct measurement sets;
+all thirty numeric entries were verified, with no recorded errors. This is
+numeric transport evidence, not course grading, persistence, or full-star completion.
+
+## Next checkpoint: peak-wavelength color
+
+The separate [color checkpoint](docs/color-checkpoint.md) adds source selection
+and a learned nine-band categorical head on the same 2,000-node recurrent graph.
+It does not change the promoted numeric checkpoint or enable color in browser batches.
+The visible reference's overlapping endpoints and 494–495 nm gap fail closed;
+no guessed thresholds or stellar classifications are supplied.
+
+The bounded smoke experiment has finite losses and a reloadable checkpoint but
+passed only **1/4 training and 0/2 development cases**. It is **not promoted**.
+The next explicit, offline run is:
+
+```sh
+.venv/bin/python scripts/train_color.py train experiments/color-pilot-001 --profile pilot
+```
+
+This is capped at 64 training cases, five epochs (320 sequence updates), and
+16 separate calibration/development cases each. It never opens HabWorlds.
 
 ## Try the learned local checkpoints
 

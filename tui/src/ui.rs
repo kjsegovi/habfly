@@ -175,7 +175,13 @@ fn draw_observation(frame: &mut Frame, app: &App, area: Rect) {
                 .join("\n")
         })
         .unwrap_or_default();
-    let extra = if calc.get("calculation_mode").is_some() {
+    let extra = if calc["calculation_mode"].as_str() == Some("learned_peak_wavelength_color_v1") {
+        format!("\nExperimental local color policy (not stellar classification)\nSelected measurement: {}\nMeasurements:\n{}\nSelected color: {}\nReference: {}\nBands (nm): {}\nAmbiguity policy: {}\nPending reference: {}\nError: {}",
+            display(&calc["source"]), measurements, display(&app.observation["values"]["answers"]["color"]),
+            display(&calc["reference_card"]["description"]), display(&calc["reference_card"]["bands"]),
+            display(&calc["reference_card"]["ambiguity_policy"]), display(&calc["reference_card"]["pending"]),
+            display(&calc["tool_error"]))
+    } else if calc.get("calculation_mode").is_some() {
         format!("\nLocal tool: {}\nSupplied class: {} · required fields {}\nOperation: {} · {}\nInputs: {}\nSelected input: {} ← {} · bindings {}\nMeasurements:\n{}\nResults: {}\nCopy: {} → {}\nLast: {}\nTool error: {}\nAnswers: {} · units {}\nBrowser readbacks: {}",
             display(&calc["calculation_mode"]), display(&app.observation["values"]["star_class"]),
             display(&app.observation["values"]["required_fields"]), display(&calc["operation"]),
@@ -653,6 +659,39 @@ mod tests {
             .map(|c| c.symbol())
             .collect();
         for expected in ["google_sheets", "A2", "C2", "distance", "101.875", "copy"] {
+            assert!(text.contains(expected), "Missing {expected}");
+        }
+    }
+
+    #[test]
+    fn color_reference_and_selected_measurement_render() {
+        let app = App {
+            focused_panel: 3,
+            observation: serde_json::json!({"instruction":"Peak wavelength color", "values": {
+                "measurements":{"m1":{"kind":"wavelength","unit":"nm","source":"current star","value":580}},
+                "answers":{"color":"Yellow"}}, "calculation": {
+                "calculation_mode":"learned_peak_wavelength_color_v1", "source":"m1",
+                "reference_card":{"description":"Peak-wavelength band", "bands":[{"label":"Yellow","minimum":570,"maximum":590}],
+                  "ambiguity_policy":"abstain", "pending":["494-495 gap"]},
+                "tool_error":"ambiguous_color_boundary"}}),
+            ..App::default()
+        };
+        let mut terminal = Terminal::new(TestBackend::new(150, 45)).unwrap();
+        terminal.draw(|frame| draw(frame, &app)).unwrap();
+        let text: String = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        for expected in [
+            "Experimental local color",
+            "Yellow",
+            "580",
+            "abstain",
+            "ambiguous_color_boundary",
+        ] {
             assert!(text.contains(expected), "Missing {expected}");
         }
     }

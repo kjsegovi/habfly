@@ -116,7 +116,7 @@ def _measurements(text):
     return result
 
 
-def map_stellar_capture(report: dict, *, capture_sha256: str) -> dict:
+def map_stellar_capture(report: dict, *, capture_sha256: str, allow_color_selection=False) -> dict:
     if (
         report.get("schema_version") != 1
         or report.get("mode") != "read_only_browser_preflight"
@@ -171,12 +171,30 @@ def map_stellar_capture(report: dict, *, capture_sha256: str) -> dict:
         if role == "combobox":
             if label not in {"peakλcolor", "peakwavelengthcolor"} or colors is not None:
                 raise StellarMappingError("unmapped_color_label")
-            if not isinstance(value, list) or value != [f'option "{name}"' for name in COLOR_OPTIONS]:
+            expected_options = [f'option "{name}"' for name in COLOR_OPTIONS]
+            selected = []
+            normalized_options = []
+            if isinstance(value, list):
+                for option in value:
+                    if not isinstance(option, str):
+                        raise StellarMappingError("unsupported_color_options_or_selection")
+                    if option.endswith(" [selected]"):
+                        selected.append(option.removesuffix(" [selected]"))
+                    normalized_options.append(option.removesuffix(" [selected]"))
+            if (
+                normalized_options != expected_options
+                or len(selected) > 1
+                or (selected and not allow_color_selection)
+            ):
                 raise StellarMappingError("unsupported_color_options_or_selection")
             control = color_controls[0]
             if _control_atom(control["accessibility"]) != (key, value):
                 raise StellarMappingError("control_snapshot_mismatch")
-            colors = {"capture_target_id": control["id"], "options": list(COLOR_OPTIONS), "selected": None}
+            colors = {
+                "capture_target_id": control["id"],
+                "options": list(COLOR_OPTIONS),
+                "selected": COLOR_OPTIONS[expected_options.index(selected[0])] if selected else None,
+            }
         else:
             if label not in FIELDS or position >= len(numeric_controls):
                 raise StellarMappingError("unmapped_numeric_label")

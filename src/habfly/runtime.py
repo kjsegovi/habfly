@@ -41,6 +41,7 @@ class RunOptions(Contract):
         "radius",
         "lifetime",
         "browser_numeric",
+        "color",
     ] = "mini_habworlds"
     spreadsheet_config: Path | None = None
     calculation_backend: Literal["local", "google_sheets"] | None = None
@@ -99,7 +100,7 @@ class Runtime:
                 "stars": self.options.stars,
                 "policy": self.options.policy,
                 "stage": self.options.task
-                if self.options.task in CALCULATION_TASKS
+                if self.options.task in CALCULATION_TASKS or self.options.task == "color"
                 else ("synthetic_demo" if self.options.environment == "simulator" else "browser_inference"),
                 "graph": str(self.options.graph or "synthetic-32"),
                 "checkpoint": str(self.options.checkpoint or "none"),
@@ -136,6 +137,16 @@ class Runtime:
             raise ValueError("Autonomous execution requires automatic browser_numeric setup and one star")
         if options.policy == "checkpoint" and not options.checkpoint:
             raise ValueError("checkpoint policy requires checkpoint path")
+        if options.task == "color" and (
+            options.environment != "simulator"
+            or options.policy != "checkpoint"
+            or not options.dataset
+            or not options.graph
+            or options.backend != "local"
+            or options.spreadsheet_config
+            or options.knowledge_pack
+        ):
+            raise ValueError("Color runtime requires a separate local color checkpoint and dataset")
         if options.environment == "browser" and options.policy != "checkpoint":
             raise ValueError("Browser runs require a trained checkpoint")
         if options.task in CALCULATION_TASKS and options.environment == "browser":
@@ -184,6 +195,38 @@ class Runtime:
                 },
             )
             self.state()
+            return
+        if options.task == "color":
+            from .environments.color import SCOPE, ColorEnv, color_cases
+            from .training.color import load_color_experiment
+
+            expected = options.dataset / "training/checkpoint.pt"
+            if options.checkpoint.resolve() != expected.resolve():
+                raise ValueError("Color runtime checkpoint must belong to its experiment")
+            self.policy, reference, report = load_color_experiment(options.dataset, options.graph)
+            cases = color_cases("manual", 100, reference)
+            if options.seed not in {c["seed"] for c in cases}:
+                raise ValueError("Choose a color manual seed from 10000000 through 10000099")
+            self.env = ColorEnv(reference, cases)
+            observation, _ = self.env.reset(seed=options.seed)
+            self.observation, self.neural_state = Observation.model_validate(observation), None
+            self.status = "paused" if options.paused else "running"
+            self.emit(
+                "hello",
+                {
+                    "protocol_version": 1,
+                    "policy": "checkpoint",
+                    "synthetic": True,
+                    "activity_source": "checkpoint",
+                    "scope": SCOPE,
+                    "reference_hash": reference.checksum,
+                    "ready_for_final_test": report["ready_for_final_test"],
+                    "browser_acceptance_passed": False,
+                    "experimental_local_checkpoint": True,
+                },
+            )
+            self.state()
+            self.emit("observation", self.observation.model_dump(mode="json"))
             return
         import torch
 

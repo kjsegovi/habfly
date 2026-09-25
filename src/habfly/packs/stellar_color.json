@@ -1,0 +1,30 @@
+{
+  "id": "habworlds-peak-wavelength-color",
+  "version": 1,
+  "quantity": "wavelength",
+  "unit": "nm",
+  "description": "Peak-wavelength band, not perceived stellar color or stellar classification.",
+  "bands": [
+    {"label": "UV", "minimum": 0, "maximum": 380, "include_minimum": false, "include_maximum": false},
+    {"label": "Violet", "minimum": 380, "maximum": 450, "include_minimum": true, "include_maximum": true},
+    {"label": "Blue", "minimum": 450, "maximum": 475, "include_minimum": true, "include_maximum": true},
+    {"label": "Cyan", "minimum": 475, "maximum": 494, "include_minimum": true, "include_maximum": true},
+    {"label": "Green", "minimum": 495, "maximum": 570, "include_minimum": true, "include_maximum": true},
+    {"label": "Yellow", "minimum": 570, "maximum": 590, "include_minimum": true, "include_maximum": true},
+    {"label": "Orange", "minimum": 590, "maximum": 620, "include_minimum": true, "include_maximum": true},
+    {"label": "Red", "minimum": 620, "maximum": 744, "include_minimum": true, "include_maximum": true},
+    {"label": "IR", "minimum": 744, "maximum": null, "include_minimum": false, "include_maximum": false}
+  ],
+  "ambiguity_policy": "abstain_when_zero_or_multiple_bands_match",
+  "pending": [
+    "Shared endpoints 450, 475, 570, 590 and 620 nm require authoritative clarification.",
+    "The open interval 494 < wavelength < 495 nm is not covered by the supplied reference.",
+    "Course grading, four-way classification and perceived stellar color are not specified here."
+  ],
+  "sources": [{
+    "reference": "docs/browser-stellar-preflight.md#observed-controls-and-remaining-gaps",
+    "evidence": "Visible HabWorlds v1.5.2 color reference transcribed during the authorized Firefox inspection; docs/habworlds-preview-inspection.md.",
+    "transcription": "UV <380; Violet 380-450; Blue 450-475; Cyan 475-494; Green 495-570; Yellow 570-590; Orange 590-620; Red 620-744; IR >744 (nm).",
+    "interpretation": "Printed closed ranges are retained, including their overlap. No tie-break or gap interpolation is invented."
+  }]
+}
