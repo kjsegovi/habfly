@@ -1,0 +1,16 @@
+{
+  "task": "planet_calculations",
+  "environment": "simulator",
+  "policy": "checkpoint",
+  "calculation_backend": "local",
+  "graph": "data/processed/graphs-v2/graph-2000",
+  "checkpoint": "experiments/planet-pilot-001/training/checkpoint.pt",
+  "dataset": "experiments/planet-pilot-001",
+  "planet_evaluation": "experiments/planet-final-001",
+  "planet_calibration": "experiments/planet-calibration-refresh-001/report.json",
+  "seed": 12000000,
+  "stars": 1,
+  "paused": true,
+  "interval": 0.2,
+  "artifact_dir": "experiments/planet-manual"
+}

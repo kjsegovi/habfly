@@ -11,7 +11,7 @@ data_app = typer.Typer(help="Inspect, build, and validate connectome artifacts")
 train_app = typer.Typer(help="Train reproducible local curricula")
 evaluate_app = typer.Typer(help="Evaluate model, baselines, simulator, and browser")
 spreadsheet_app = typer.Typer(help="Inspect or verify the dedicated Google Sheets working copy")
-knowledge_app = typer.Typer(help="Inspect and independently validate the offline stellar knowledge pack")
+knowledge_app = typer.Typer(help="Inspect and independently validate offline knowledge packs")
 diagnose_app = typer.Typer(help="Bounded local learning diagnostics; not browser acceptance")
 browser_app = typer.Typer(help="Read-only preflight and human-stepped numeric diagnostic; no learned policy")
 app.add_typer(data_app, name="data")
@@ -136,6 +136,65 @@ def browser_map_stellar(capture: Path, output: Path):
     )
 
 
+@browser_app.command("map-assessment")
+def browser_map_assessment(capture: Path):
+    """Read a hashed assessment capture offline. Does not spend, save, or submit."""
+    from .browser_assessment import load_assessment_capture
+    from .project_assessment import AssessmentError
+
+    try:
+        mapping = load_assessment_capture(capture)
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        reason = str(exc) if isinstance(exc, AssessmentError) else type(exc).__name__
+        typer.echo(f"No assessment mapped: {reason}", err=True)
+        raise typer.Exit(1) from None
+    emit(mapping)
+
+
+@browser_app.command("map-planet")
+def browser_map_planet(capture: Path):
+    """Map hashed public planet fields offline; no browser actions or chart inference."""
+    from .browser_planet import load_planet_capture
+    from .browser_stellar import StellarMappingError
+
+    try:
+        mapping = load_planet_capture(capture)
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        reason = str(exc) if isinstance(exc, StellarMappingError) else type(exc).__name__
+        typer.echo(f"No planet fields mapped: {reason}", err=True)
+        raise typer.Exit(1) from None
+    emit(mapping)
+
+
+@browser_app.command("map-habitability")
+def browser_map_habitability(capture: Path):
+    """Read hashed terrestrial fields offline; no gas/phase inference or writes."""
+    from .browser_habitability import load_habitability_capture
+    from .browser_stellar import StellarMappingError
+
+    try:
+        mapping = load_habitability_capture(capture)
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        reason = str(exc) if isinstance(exc, StellarMappingError) else type(exc).__name__
+        typer.echo(f"No habitability fields mapped: {reason}", err=True)
+        raise typer.Exit(1) from None
+    emit(mapping)
+
+
+@browser_app.command("analyze-planet-window")
+def browser_analyze_planet_window(capture: Path):
+    """Replay a saved 5,000-day chart crop offline; no browser or answer writes."""
+    from .browser import BrowserSafetyStop
+    from .browser_window_replay import load_planet_window_capture
+
+    try:
+        result = load_planet_window_capture(capture)
+    except BrowserSafetyStop as exc:
+        typer.echo(f"No window analysis: {exc}", err=True)
+        raise typer.Exit(1) from None
+    emit(result)
+
+
 @browser_app.command("test-numeric")
 def browser_test_numeric(
     config: Path, output: Path, url: str | None = None, check: bool = False, new_test_session: bool = False
@@ -247,18 +306,40 @@ def diagnose_distance(output: Path, profile: Path = Path("configs/distance_diagn
 
 
 @knowledge_app.command("inspect")
-def knowledge_inspect(pack: Path | None = None):
+def knowledge_inspect(pack: Path | None = None, task: str = "stellar"):
     from .knowledge import load_knowledge_pack
 
-    knowledge = load_knowledge_pack(pack)
+    if task == "planet":
+        from .planet_knowledge import load_planet_pack
+
+        knowledge = load_planet_pack(pack)
+    elif task == "habitability":
+        from .habitability_knowledge import load_habitability_pack
+
+        knowledge = load_habitability_pack(pack)
+    elif task == "stellar":
+        knowledge = load_knowledge_pack(pack)
+    else:
+        raise typer.BadParameter("Task must be stellar, planet or habitability")
     emit({"sha256": knowledge.checksum, "pack": knowledge.model_dump(mode="json")})
 
 
 @knowledge_app.command("validate")
-def knowledge_validate(pack: Path | None = None):
+def knowledge_validate(pack: Path | None = None, task: str = "stellar"):
     from .knowledge import LocalCalculator, load_knowledge_pack
 
-    emit(LocalCalculator(load_knowledge_pack(pack)).verify())
+    if task == "planet":
+        from .planet_knowledge import PlanetCalculator, load_planet_pack
+
+        emit(PlanetCalculator(load_planet_pack(pack)).verify())
+    elif task == "habitability":
+        from .habitability_knowledge import HabitabilityCalculator, load_habitability_pack
+
+        emit(HabitabilityCalculator(load_habitability_pack(pack)).verify())
+    elif task == "stellar":
+        emit(LocalCalculator(load_knowledge_pack(pack)).verify())
+    else:
+        raise typer.BadParameter("Task must be stellar, planet or habitability")
 
 
 @spreadsheet_app.command("inspect")
@@ -649,13 +730,34 @@ def evaluate_browser(config: Path, checkpoint: Path, graph: Path, content_pack: 
 
 
 @app.command("runtime")
-def runtime(jsonl: Annotated[bool, typer.Option("--jsonl")] = False):
+def runtime(
+    jsonl: Annotated[bool, typer.Option("--jsonl")] = False,
+    start_options: Annotated[
+        Path | None,
+        typer.Option("--start-options", help="Local RunOptions JSON to start before reading v1 commands."),
+    ] = None,
+):
     """Read v1 commands from stdin and emit v1 events on stdout."""
     if not jsonl:
         raise typer.BadParameter("Use --jsonl for the versioned runtime protocol")
-    from .runtime import serve
+    from .runtime import parse_run_options, serve
 
-    serve()
+    if start_options is None:
+        serve()
+        return
+    try:
+        with start_options.open("rb") as stream:
+            raw = stream.read(65537)
+        if len(raw) > 65536:
+            raise ValueError("oversized")
+        payload = json.loads(raw)
+        if not isinstance(payload, dict):
+            raise TypeError("not an object")
+        options = parse_run_options(payload)
+    except (OSError, TypeError, ValueError, UnicodeError):
+        # Never echo JSON fields, private session URLs, credentials, or file paths.
+        raise typer.BadParameter("Invalid start-options JSON or incompatible/missing local inputs") from None
+    serve(start_options=options.model_dump(mode="json"))
 
 
 @app.command("replay")

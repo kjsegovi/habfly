@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "id": "planet_explicit_supplied_inputs_v1",
+  "scope": "independent_physics_supplied_stellar_inputs_v1",
+  "base_pack_file_sha256": "a102f70249a7af610906c6806aa4faa762db94b7c45b3835cf40f895943fc036",
+  "base_pack_hash": "f5acfb5e1b6ce0a4bcdc49176d20e939b0a2939635f259e4b9a82fdad66299da",
+  "classes": ["main_sequence", "white_dwarf", "red_giant", "supergiant"],
+  "input_authority": "explicit_supplied_current_star_measurements_only",
+  "applicability": "Evaluate the unchanged candidate equations only with explicitly supplied positive stellar mass and radius and every original physics assumption. A class label does not establish those assumptions or measured-input reliability.",
+  "excluded": ["stellar_mass_radius_lifetime_inference", "course_applicability_claim", "native_browser_enablement", "planet_existence_or_classification", "habitability", "training_oracle"],
+  "implementation": "Load the hash-pinned original pack, retain its formulas, constants, units, descriptions, sources, assumptions and conflicts verbatim, and explicitly replace only operation class applicability under this independent supplied-input scope."
+}

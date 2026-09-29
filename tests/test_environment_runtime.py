@@ -129,6 +129,43 @@ def test_runtime_jsonl_recovers_malformed_messages():
     assert sum(e["event"] == "error" for e in events) == 2
 
 
+def test_chart_sensor_rust_fixture_replays_offline_without_reinterpreting_failure(monkeypatch):
+    import hashlib
+    import socket
+    from pathlib import Path
+
+    from habfly.spreadsheet import SpreadsheetAdapter
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("Recorded sensor replay must not access browser, network or Sheets")
+
+    monkeypatch.setattr(socket.socket, "connect", forbidden)
+    monkeypatch.setattr(socket, "create_connection", forbidden)
+    monkeypatch.setattr(SpreadsheetAdapter, "__init__", forbidden)
+    monkeypatch.setattr("habfly.browser.TorusBrowser.__init__", forbidden)
+    source = Path("tui/tests/fixtures/chart-sensor.jsonl")
+    checksum = hashlib.sha256(source.read_bytes()).hexdigest()
+    original = read_trace(source)
+    output = io.StringIO()
+    runtime = Runtime(output)
+    runtime.command({"command": "replay", "payload": {"path": str(source)}})
+    while runtime.status == "running":
+        runtime.tick()
+    events = [json.loads(line) for line in output.getvalue().splitlines()]
+    recorded = events[1:-1]  # Enclosing runtime states are replay controls, not evidence.
+    assert len(recorded) == len(original)
+    for replayed, source_event in zip(recorded, original, strict=True):
+        expected = {**source_event.payload, "replay": True}
+        if source_event.event == "state":
+            expected.update(recorded_status=source_event.payload.get("status"), status="running")
+        assert (replayed["event"], replayed["payload"]) == (source_event.event, expected)
+    assert recorded[-1]["payload"]["reason"] == "chart_time_limit"
+    assert not recorded[-1]["payload"]["task_completed"]
+    assert events[-1]["payload"]["replay"]
+    assert hashlib.sha256(source.read_bytes()).hexdigest() == checksum
+    runtime.close()
+
+
 def test_quitting_finished_runtime_preserves_original_completion(tmp_path):
     runtime = Runtime(io.StringIO())
     runtime.command({"command": "start", "payload": {"artifact_dir": str(tmp_path)}})

@@ -174,13 +174,13 @@ class BrowserToolEnv(LocalStellarEnv):
 class BrowserPolicyBridge:
     """Owns one fresh Chromium context and an explicit ready/propose/approve lifecycle."""
 
-    def __init__(self, options, output, provenance, *, page=None, config=None):
+    def __init__(self, options, output, provenance, *, page=None, config=None, setup_complete=False):
+        if setup_complete and page is None:
+            raise ValueError("Reusing completed setup requires an explicitly supplied page")
         self.options = options
         self.config = config or browser_config(options)
-        self.journal = NumericJournal(
-            output,
-            learned_policy=True,
-            provenance={**provenance, "browser_execution": options.browser_execution},
+        self.journal = self._make_journal(
+            output, {**provenance, "browser_execution": options.browser_execution}
         )
         self.phase = "awaiting_ready"
         self.pending = None
@@ -197,7 +197,7 @@ class BrowserPolicyBridge:
         try:
             from .browser_setup import BrowserSetup, SetupStop, consume_credentials
 
-            if options.browser_setup == "automatic":
+            if options.browser_setup == "automatic" and not setup_complete:
                 # Consume before starting the Playwright driver/browser subprocesses.
                 credentials = consume_credentials()
                 for key in ("DEBUG", "PWDEBUG", "DEBUG_FILE"):
@@ -209,7 +209,7 @@ class BrowserPolicyBridge:
                 self.browser = self.driver.chromium.launch(headless=False)
                 self.context = self.browser.new_context()
                 self.page = self.context.new_page()
-            if options.browser_setup == "automatic":
+            if options.browser_setup == "automatic" and not setup_complete:
                 self.setup = BrowserSetup(
                     self.page,
                     self.config,
@@ -231,6 +231,17 @@ class BrowserPolicyBridge:
             raise BrowserSafetyStop(self.outcome) from None
         finally:
             credentials = None
+
+    def _make_journal(self, output, provenance):
+        return NumericJournal(output, learned_policy=True, provenance=provenance)
+
+    def _finish_journal(self):
+        return self.journal.finish(
+            outcome=self.outcome,
+            attempts=self.session.attempts if self.session else 0,
+            verified=list(self.session.verified) if self.session else [],
+            pack_hash=load_knowledge_pack().checksum,
+        )
 
     def state(self):
         autonomous = self.options.browser_execution == "autonomous"
@@ -352,6 +363,9 @@ class BrowserPolicyBridge:
 
     def step(self, action):
         result = self.tool.step(Action.model_validate(action))
+        return self._track_step(result, self.tool.transport_verified, "numeric_transport_verified")
+
+    def _track_step(self, result, verified, success_outcome):
         signature = json.dumps(
             {
                 "values": result.observation.values,
@@ -371,11 +385,16 @@ class BrowserPolicyBridge:
         if result.terminated or result.truncated:
             self.phase = "finished"
             self.outcome = (
-                "numeric_transport_verified"
-                if self.tool.transport_verified
+                success_outcome
+                if verified and not result.failure_reason
                 else result.failure_reason or "policy_stopped"
             )
         return result
+
+    def _stop_session(self):
+        if self.session:
+            self.session.stopped = True
+            self.page.remove_listener("dialog", self.session._dialog)
 
     def close(self, *, keep_browser_open=False):
         if self.summary is None:
@@ -383,15 +402,8 @@ class BrowserPolicyBridge:
             self.pending = None
             if self.setup:
                 self.setup.close()
-            if self.session:
-                self.session.stopped = True
-                self.page.remove_listener("dialog", self.session._dialog)
-            self.summary = self.journal.finish(
-                outcome=self.outcome,
-                attempts=self.session.attempts if self.session else 0,
-                verified=list(self.session.verified) if self.session else [],
-                pack_hash=load_knowledge_pack().checksum,
-            )
+            self._stop_session()
+            self.summary = self._finish_journal()
         self.browser_held = keep_browser_open and self.page is not None and not self.page.is_closed()
         if self.browser_held:
             return

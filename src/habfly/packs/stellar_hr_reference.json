@@ -1,0 +1,56 @@
+{
+  "version": 1,
+  "id": "visible-hr-diagram-coarse-reference-v1",
+  "mode": "reference_prediction",
+  "description": "Conservative manually digitized interiors of the visible diagram bands. Not course boundaries or learned classification. Areas between or overlapping interiors deliberately abstain.",
+  "source": {
+    "title": "HabWorlds Project H-R Diagram help image",
+    "capture": "experiments/full-stellar-probe/20260925-004/reference-1.png",
+    "sha256": "b1850640a9faf6ccdbd55af6bf5243d79faa6d2238a4fc130c6c458f94acb122",
+    "capture_date": "2026-09-25",
+    "surface": "student_visible_reference_image",
+    "simulation_version": "1.5.2",
+    "image_size": [566,575],
+    "coordinate_frame": "unscaled_capture_pixels_top_left_origin"
+  },
+  "axes": {
+    "temperature": {"unit": "K", "ticks": [[30000,155],[3000,486]], "transform": "log10_decreasing"},
+    "luminosity": {"unit": "Lsun", "ticks": [[1,290],[0.00001,486]], "transform": "log10_decreasing"},
+    "plot_bounds": [81,37,543,487]
+  },
+  "boundary_abstention_pixels": 2.0,
+  "digitization": {
+    "method": "manual_visible_band_interiors",
+    "boundary_authority": "analyst_chosen_not_course_boundaries",
+    "boundary_margin_calibrated": false,
+    "visible_label_aliases": {"MAIN SEQUENCE":"main_sequence","WHITE DWARFS":"white_dwarf","GIANTS":"red_giant","SUPERGIANTS":"supergiant"},
+    "alias_note": "The image says GIANTS; red_giant is an explicit alias to the native control, not an additional scientific boundary supplied by the image.",
+    "axis_check_source": "independent_manual_reading_of_visible_gridlines",
+    "axis_check_tolerance_pixels": 2.5,
+    "axis_checks": {
+      "temperature": [[10000,313],[6000,386]],
+      "luminosity": [[1000000,56.5],[1000,173],[100,212],[10,251],[0.1,328.5],[0.001,406.5]]
+    }
+  },
+  "regions": {
+    "main_sequence": [[103,57],[155,87],[203,132],[253,171],[320,210],[358,245],[390,267],[424,301],[460,333],[492,373],[519,418],[522,456],[512,463],[496,419],[473,384],[446,350],[416,325],[385,299],[355,278],[331,258],[302,238],[241,193],[194,153],[160,114],[114,76]],
+    "white_dwarf": [[158,311],[201,312],[253,334],[304,360],[352,397],[370,427],[334,434],[289,415],[240,388],[194,354]],
+    "red_giant": [[385,245],[401,217],[418,194],[446,172],[470,169],[490,194],[480,226],[439,245],[403,263]],
+    "supergiant": [[207,74],[264,78],[313,57],[345,83],[382,104],[419,89],[466,72],[497,87],[493,122],[467,145],[421,146],[393,165],[369,150],[342,141],[308,120],[259,112],[215,98]]
+  },
+  "limitations": [
+    "Manual diagram digitization is approximate, not a calibrated classifier.",
+    "Only unique region interiors yield a candidate; gaps, overlaps and boundary proximity abstain.",
+    "Coordinates outside this particular reference image are not extrapolated.",
+    "The two-pixel abstention margin is uncalibrated and does not bound manual band or measurement uncertainty.",
+    "Geometry-only use does not verify source image bytes; explicit offline source validation is reported separately.",
+    "A candidate is not a course-verified answer, training label, or browser action authorization."
+  ],
+  "classification_learned": false,
+  "scientific_verified": false,
+  "training_label": false,
+  "browser_actions": 0,
+  "diagnostic_only": true,
+  "runtime_enabled": false,
+  "write_authorized": false
+}

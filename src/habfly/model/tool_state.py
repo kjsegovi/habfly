@@ -60,7 +60,7 @@ def visible_sources(observation):
     return {**measurements, **{ref: {**row, "source": source(ref, set())} for ref, row in results.items()}}
 
 
-def state_features(observation):
+def state_features(observation, *, quantities=QUANTITIES):
     state, values = observation.get("calculation") or {}, observation.get("values") or {}
     sources = visible_sources(observation)
     results = {k: r for k, r in state.get("results", {}).items() if r.get("valid")}
@@ -68,7 +68,7 @@ def state_features(observation):
     selected = results.get(state.get("selected_result"), {})
     pending = results.get(state.get("pending_result"), {})
     vectors = []
-    for quantity in QUANTITIES:
+    for quantity in quantities:
         vectors.extend(
             [
                 state.get("operation") == quantity,

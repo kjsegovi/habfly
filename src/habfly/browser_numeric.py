@@ -357,6 +357,22 @@ class NumericSession:
     MAX_CALCULATIONS = 6
     MAX_SECONDS = 900
 
+    def _map_report(self, report):
+        return map_stellar_capture(
+            report, capture_sha256=screen_identity(report), allow_color_selection=self.ALLOW_COLOR_SELECTION
+        )
+
+    def _field_labels(self, mapping):
+        return FIELDS
+
+    def _calculate_result(self, operation, bindings):
+        return self.calculator.execute_unclassified_common(operation, bindings)
+
+    def _copy_intent(self, result, destination):
+        return plan_numeric_copy(
+            self.mapping, result, destination, capture_sha256=self.mapping["capture_sha256"]
+        )
+
     def __init__(self, page, config: BrowserProbeConfig, journal: NumericJournal):
         self.page, self.config, self.journal = page, config, journal
         self.calculator = LocalCalculator(load_knowledge_pack())
@@ -396,9 +412,7 @@ class NumericSession:
         report = inspect_page(self.page, self.config)
         if report["ignored_frame_urls"]:
             raise BrowserSafetyStop("unknown_visible_frame")
-        mapping = map_stellar_capture(
-            report, capture_sha256=screen_identity(report), allow_color_selection=self.ALLOW_COLOR_SELECTION
-        )
+        mapping = self._map_report(report)
         frames = [
             f for f in self.page.frames if f.url == SIMULATION_URL and _visible_frame(f, self.page.main_frame)
         ]
@@ -423,9 +437,10 @@ class NumericSession:
                 if prefix is None:
                     raise BrowserSafetyStop("detached_numeric_field")
                 label = "".join(prefix.casefold().split()).split("yourreconstruction")[-1]
-                if label not in FIELDS:
+                labels = self._field_labels(mapping)
+                if label not in labels:
                     raise BrowserSafetyStop("unverified_visible_field_label")
-                name, unit = FIELDS[label]
+                name, unit = labels[label]
                 if name in handles or name not in fields or unit != fields[name]["unit"]:
                     raise BrowserSafetyStop("ambiguous_live_field")
                 if handle.input_value() != fields[name]["current_value"]:
@@ -490,7 +505,7 @@ class NumericSession:
             name: {"value": sources[key]["value"], "unit": sources[key]["unit"]}
             for name, key in selections.items()
         }
-        result = self.calculator.execute_unclassified_common(operation, bindings)
+        result = self._calculate_result(operation, bindings)
         ident = f"result:{self.calculations}"
         self.journal.emit(
             "state",
@@ -523,9 +538,7 @@ class NumericSession:
         if result_id not in self.results:
             raise StellarMappingError("unknown_result")
         result = CalculationResult.model_validate(self.results[result_id]["result"])
-        intent = plan_numeric_copy(
-            self.mapping, result, destination, capture_sha256=self.mapping["capture_sha256"]
-        )
+        intent = self._copy_intent(result, destination)
         action = {
             "kind": "TYPE",
             "target": f"live:{self.revision}:{destination}",
@@ -543,7 +556,12 @@ class NumericSession:
                 else "human_selected",
                 "copy_authorization": authorization,
                 "result_id": result_id,
-                "unit": result.unit,
+                "unit": intent["unit"],
+                **(
+                    {"calculation_unit": result.unit, "calculation_value": repr(result.value)}
+                    if intent["unit"] != result.unit
+                    else {}
+                ),
                 "commit_action": commit_action,
                 "display_policy": DISPLAY_POLICY,
             },
@@ -599,7 +617,12 @@ class NumericSession:
             )
             receipt = {
                 "result_id": result_id,
-                "unit": result.unit,
+                "unit": intent["unit"],
+                **(
+                    {"calculation_unit": result.unit, "calculation_value": repr(result.value)}
+                    if intent["unit"] != result.unit
+                    else {}
+                ),
                 "exact_input_verified": True,
                 "commit_key": "Tab",
                 **formatting,

@@ -1,0 +1,15 @@
+{
+  "task": "habitability_calculations",
+  "environment": "simulator",
+  "policy": "checkpoint",
+  "calculation_backend": "local",
+  "graph": "data/processed/graphs-v2/graph-2000",
+  "checkpoint": "experiments/habitability-pilot-001/training/checkpoint.pt",
+  "dataset": "experiments/habitability-pilot-001",
+  "habitability_evaluation": "experiments/habitability-final-001",
+  "seed": 17000000,
+  "stars": 1,
+  "paused": true,
+  "interval": 0.2,
+  "artifact_dir": "experiments/habitability-manual"
+}

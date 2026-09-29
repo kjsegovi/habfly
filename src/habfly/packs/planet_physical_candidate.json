@@ -1,0 +1,96 @@
+{
+  "schema_version": 1,
+  "id": "planet_physical_candidate_v1",
+  "validation_scope": "independent_physics_only_course_pending",
+  "assumptions": [
+    "circular_orbit",
+    "edge_on_transiting_system",
+    "planet_mass_negligible_relative_to_star",
+    "line_shift_is_semi_amplitude_not_peak_to_peak",
+    "stellar_inputs_are_explicit_validated_measurements"
+  ],
+  "source_conflicts": [{
+    "source": "docs/habworlds-spreadsheet-reference.md#unit-and-applicability-decisions",
+    "original_cell": "Sheet1!T2",
+    "original_formula": "=11.177*(SQRT((X2^2)*S2*H2))",
+    "original_dependency": "H2 is stellar radius in solar radii",
+    "candidate_dependency": "stellar_mass in solar masses",
+    "status": "Physical candidate differs from source. Original sheet unchanged. Course validation pending.",
+    "independent_reference": "https://exoplanetarchive.ipac.caltech.edu/docs/poet_calculations.html"
+  }],
+  "pending": [
+    "Validate planet mass and period conventions against visible course assessment",
+    "Establish chart completion, transit depth, period and Doppler amplitude extraction",
+    "Course-specific gas giant, ice giant and terrestrial class rules",
+    "Atmospheric absorption, water-phase and habitability workflow"
+  ],
+  "provenance": {
+    "source_inventory": "docs/habworlds-spreadsheet-reference.md",
+    "spreadsheet": "https://docs.google.com/spreadsheets/d/1xr6vbzvlCZRRLpHrgXhzTOL1_tt1rH0Qq4mL-Q-XCPA/edit?gid=0#gid=0",
+    "physical_reference": "https://exoplanetarchive.ipac.caltech.edu/docs/poet_calculations.html",
+    "scope": "Explicit experimental calculation tool, not a grading answer source",
+    "date": "2026-09-25"
+  },
+  "operations": [
+    {
+      "id": "period_years",
+      "description": "Convert an explicitly measured orbital period in days to years using the worksheet's 365-day convention.",
+      "inputs": {"period_days":{"quantity":"period_days","unit":"day"}},
+      "expression": "period_days / days_per_year",
+      "constants": {"days_per_year":365},
+      "output_unit": "yr",
+      "applicable_classes": ["main_sequence"],
+      "sources": [{"reference":"docs/habworlds-spreadsheet-reference.md","cells":"N9 = 1841/365; N13 uses unconverted days and is not adopted"}]
+    },
+    {
+      "id": "radial_velocity",
+      "description": "Convert positive maximum line displacement from 656.3 nm into radial-velocity semi-amplitude, not peak-to-peak velocity.",
+      "inputs": {"line_shift":{"quantity":"line_shift","unit":"nm"}},
+      "expression": "line_shift / rest_wavelength * light_speed",
+      "constants": {"rest_wavelength":656.3,"light_speed":300000000},
+      "output_unit": "m/s",
+      "applicable_classes": ["main_sequence"],
+      "sources": [{"reference":"docs/habworlds-spreadsheet-reference.md","cells":"X2, Y2"}]
+    },
+    {
+      "id": "orbital_radius",
+      "description": "Kepler circular-orbit semi-major axis from period in years and stellar mass in solar masses.",
+      "inputs": {"period_years":{"quantity":"period_years","unit":"yr"},"stellar_mass":{"quantity":"stellar_mass","unit":"Msun"}},
+      "expression": "(period_years ** 2 * stellar_mass) ** (1 / 3)",
+      "constants": {},
+      "output_unit": "au",
+      "applicable_classes": ["main_sequence"],
+      "sources": [{"reference":"docs/habworlds-spreadsheet-reference.md","cells":"S2, G2"},{"reference":"https://exoplanetarchive.ipac.caltech.edu/docs/poet_calculations.html","section":"Orbital Period"}]
+    },
+    {
+      "id": "planet_radius",
+      "description": "Transit radius from brightness DROP in percent, not remaining normalized flux, and stellar radius in solar radii.",
+      "inputs": {"brightness_drop":{"quantity":"brightness_drop","unit":"%"},"stellar_radius":{"quantity":"stellar_radius","unit":"Rsun"}},
+      "expression": "(brightness_drop / 100) ** 0.5 * stellar_radius * solar_to_earth_radius",
+      "constants": {"solar_to_earth_radius":109},
+      "output_unit": "REarth",
+      "applicable_classes": ["main_sequence"],
+      "sources": [{"reference":"docs/habworlds-spreadsheet-reference.md","cells":"Q2, O2, P2"},{"reference":"https://exoplanetarchive.ipac.caltech.edu/docs/poet_calculations.html","section":"Transit Depth"}]
+    },
+    {
+      "id": "planet_mass",
+      "description": "Physical candidate for planet mass from radial-velocity semi-amplitude, orbital radius and stellar MASS. Differs deliberately from the unresolved T2 radius dependency.",
+      "inputs": {"radial_velocity":{"quantity":"radial_velocity","unit":"m/s"},"orbital_radius":{"quantity":"orbital_radius","unit":"au"},"stellar_mass":{"quantity":"stellar_mass","unit":"Msun"}},
+      "expression": "rv_mass_factor * (radial_velocity ** 2 * orbital_radius * stellar_mass) ** 0.5",
+      "constants": {"rv_mass_factor":11.177},
+      "output_unit": "MEarth",
+      "applicable_classes": ["main_sequence"],
+      "sources": [{"reference":"docs/habworlds-spreadsheet-reference.md","cells":"T2 coefficient only; H2 dependency NOT adopted"},{"reference":"https://exoplanetarchive.ipac.caltech.edu/docs/poet_calculations.html","section":"Radial Velocity Semi-amplitude; circular edge-on low planet-mass approximation"}]
+    },
+    {
+      "id": "planet_density",
+      "description": "Bulk density from explicitly selected Earth-mass and Earth-radius results, preserving worksheet gram/centimeter conversions.",
+      "inputs": {"planet_mass":{"quantity":"planet_mass","unit":"MEarth"},"planet_radius":{"quantity":"planet_radius","unit":"REarth"}},
+      "expression": "planet_mass * earth_grams / ((4 / 3) * pi * (planet_radius * earth_radius_cm) ** 3)",
+      "constants": {"earth_grams":5.97e27,"earth_radius_cm":637000000,"pi":3.141592653589793},
+      "output_unit": "g/cm3",
+      "applicable_classes": ["main_sequence"],
+      "sources": [{"reference":"docs/habworlds-spreadsheet-reference.md","cells":"U2, V2, W2"},{"reference":"https://exoplanetarchive.ipac.caltech.edu/docs/pscp_calc.html","section":"Planet Density"}]
+    }
+  ]
+}

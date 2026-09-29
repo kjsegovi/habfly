@@ -87,6 +87,30 @@ fn send(process: &RuntimeProcess, app: &mut App, command: CommandKind, payload: 
     }
 }
 
+fn legacy_browser_approval(app: &App, key: char) -> Option<Value> {
+    if app.is_browser_project() || app.state["replay"] == true {
+        return None;
+    }
+    match (key, app.state["browser_phase"].as_str()) {
+        ('b', Some("awaiting_ready")) => Some(json!({"browser_ready":true})),
+        ('y', Some("awaiting_copy"))
+            if app.state["browser_execution"] != "autonomous" || app.paused =>
+        {
+            Some(json!({"approve_copy":true}))
+        }
+        ('y', Some("awaiting_color")) if app.paused => Some(json!({"approve_color":true})),
+        _ => None,
+    }
+}
+
+fn resume(process: &RuntimeProcess, app: &mut App) {
+    if let Some(guidance) = app.browser_resume_guidance() {
+        app.log(guidance);
+    } else {
+        send(process, app, CommandKind::Resume, json!({}));
+    }
+}
+
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     let Some(options) = options(env::args().skip(1)).map_err(io::Error::other)? else {
         print!("{HELP}");
@@ -188,47 +212,27 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     options.start_payload.clone(),
                 ),
                 KeyCode::Char('p') => send(&process, &mut app, CommandKind::Pause, json!({})),
-                KeyCode::Char('r') => send(&process, &mut app, CommandKind::Resume, json!({})),
+                KeyCode::Char('r') => resume(&process, &mut app),
                 KeyCode::Char(' ') => {
-                    let command = if app.paused {
-                        CommandKind::Resume
+                    if app.paused {
+                        resume(&process, &mut app);
                     } else {
-                        CommandKind::Pause
-                    };
-                    send(&process, &mut app, command, json!({}));
+                        send(&process, &mut app, CommandKind::Pause, json!({}));
+                    }
                 }
-                KeyCode::Char('n')
-                    if app.state["browser_execution"] == "autonomous"
-                        && app.state["replay"] != true
-                        && !app.paused =>
-                {
-                    app.log(
-                        "Autonomous decisions run automatically; p pauses before manual stepping.",
-                    );
+                KeyCode::Char('n') => {
+                    if let Some(guidance) = app.browser_step_guidance() {
+                        app.log(guidance);
+                    } else {
+                        send(&process, &mut app, CommandKind::Step, json!({}));
+                    }
                 }
-                KeyCode::Char('n') => send(&process, &mut app, CommandKind::Step, json!({})),
-                KeyCode::Char('b')
-                    if app.state["browser_phase"] == "awaiting_ready"
-                        && app.state["replay"] != true =>
-                {
-                    send(
-                        &process,
-                        &mut app,
-                        CommandKind::Step,
-                        json!({"browser_ready":true}),
-                    )
-                }
-                KeyCode::Char('y')
-                    if app.state["browser_phase"] == "awaiting_copy"
-                        && (app.state["browser_execution"] != "autonomous" || app.paused)
-                        && app.state["replay"] != true =>
-                {
-                    send(
-                        &process,
-                        &mut app,
-                        CommandKind::Step,
-                        json!({"approve_copy":true}),
-                    )
+                KeyCode::Char(key @ ('b' | 'y')) => {
+                    if let Some(payload) = legacy_browser_approval(&app, key) {
+                        send(&process, &mut app, CommandKind::Step, payload);
+                    } else if app.is_browser_project() && app.state["replay"] != true {
+                        app.log("Project mode has no b/y approvals. Reference evidence must arrive through a validated runtime handoff.");
+                    }
                 }
                 KeyCode::Char('a') => send(&process, &mut app, CommandKind::Abort, json!({})),
                 KeyCode::Char('t') => send(
@@ -261,6 +265,70 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn project_mode_never_synthesizes_legacy_approvals() {
+        let mut app = App {
+            paused: true,
+            state: json!({"runtime_task":"browser_project",
+            "task":"child_numeric"}),
+            ..App::default()
+        };
+        for phase in [
+            "awaiting_ready",
+            "awaiting_copy",
+            "awaiting_color",
+            "awaiting_class_source",
+            "awaiting_inventory",
+        ] {
+            app.state["browser_phase"] = phase.into();
+            for key in ['b', 'y'] {
+                assert!(legacy_browser_approval(&app, key).is_none());
+            }
+        }
+    }
+
+    #[test]
+    fn legacy_approvals_preserve_pause_and_replay_rules() {
+        let mut app = App {
+            paused: true,
+            state: json!({"browser_phase":"awaiting_ready"}),
+            ..App::default()
+        };
+        assert_eq!(
+            legacy_browser_approval(&app, 'b'),
+            Some(json!({"browser_ready":true}))
+        );
+        app.state["browser_phase"] = "awaiting_copy".into();
+        assert_eq!(
+            legacy_browser_approval(&app, 'y'),
+            Some(json!({"approve_copy":true}))
+        );
+        app.state["browser_execution"] = "autonomous".into();
+        app.paused = false;
+        assert!(legacy_browser_approval(&app, 'y').is_none());
+        app.state["browser_phase"] = "awaiting_color".into();
+        assert!(legacy_browser_approval(&app, 'y').is_none());
+        app.paused = true;
+        assert_eq!(
+            legacy_browser_approval(&app, 'y'),
+            Some(json!({"approve_color":true}))
+        );
+        app.state["replay"] = true.into();
+        assert!(legacy_browser_approval(&app, 'y').is_none());
+    }
+
+    #[test]
+    fn generic_start_payload_accepts_project_without_adding_handoff_or_credentials() {
+        let options = options(["--autostart".into(), "--start-payload".into(),
+            r#"{"task":"browser_project","policy":"checkpoint","environment":"browser","browser_setup":"automatic","browser_execution":"autonomous","paused":true}"#.into()]).unwrap().unwrap();
+        assert_eq!(options.start_payload["task"], "browser_project");
+        assert_eq!(options.start_payload["policy"], "checkpoint");
+        assert_eq!(options.start_payload["stars"], 1);
+        assert!(options.start_payload.get("class_source").is_none());
+        assert!(options.start_payload.get("inventory").is_none());
+        assert!(options.start_payload.get("credentials").is_none());
+    }
 
     #[test]
     fn default_demo_is_explicitly_expert() {

@@ -1,0 +1,16 @@
+{
+  "task": "browser_color",
+  "environment": "browser",
+  "policy": "checkpoint",
+  "calculation_backend": "local",
+  "graph": "data/processed/graphs-v2/graph-2000",
+  "checkpoint": "experiments/color-pilot-006/training/checkpoint.pt",
+  "dataset": "experiments/color-pilot-006",
+  "browser_config": "configs/browser_probe.example.json",
+  "browser_setup": "automatic",
+  "browser_execution": "supervised",
+  "seed": 0,
+  "stars": 1,
+  "paused": true,
+  "artifact_dir": "experiments/browser-color"
+}

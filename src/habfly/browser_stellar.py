@@ -23,8 +23,17 @@ FIELDS = {
     "luminosity(ls)": ("luminosity", "Lsun"),
     "temperature(k)": ("temperature", "K"),
 }
+CONDITIONAL_FIELDS = {
+    "mass(ms)": ("mass", "Msun"),
+    "radius(rs)": ("radius", "Rsun"),
+    "lifetime(years)": ("lifetime", "yr"),
+}
+LIFETIME_PREFIXES = ["ka", "Ma", "Ga", "Ta"]
 COLOR_OPTIONS = ["IR", "Red", "Orange", "Yellow", "Green", "Cyan", "Blue", "Violet", "UV"]
 CLASSES = ["main_sequence", "red_giant", "supergiant", "white_dwarf"]
+# Keep the original Python syntax/complexity gate, then use the installed
+# C-backed safe constructor when compatible. No observations/checks are cached.
+_ACCESSIBILITY_LOADER = getattr(yaml, "CSafeLoader", yaml.SafeLoader)
 
 
 class StellarMappingError(ValueError):
@@ -45,7 +54,23 @@ def _atoms(snapshot):
             for node in nodes
         ):
             raise StellarMappingError("unsupported_accessibility_yaml")
-        parsed = yaml.safe_load(snapshot)
+        depth = maximum_depth = 0
+        for node in nodes:
+            if isinstance(node, (yaml.events.SequenceStartEvent, yaml.events.MappingStartEvent)):
+                depth += 1
+                maximum_depth = max(maximum_depth, depth)
+            elif isinstance(node, (yaml.events.SequenceEndEvent, yaml.events.MappingEndEvent)):
+                depth -= 1
+        # This selects an implementation, not a new accepted-layout limit.
+        # Preserve SafeLoader's recursive-construction behavior for unusual
+        # deep input; native flat AX/control snapshots are only a few levels.
+        loader = _ACCESSIBILITY_LOADER if maximum_depth <= 32 else yaml.SafeLoader
+        try:
+            parsed = yaml.load(snapshot, Loader=loader)
+        except (yaml.YAMLError, UnicodeError, RecursionError):
+            # LibYAML rejects some strings the original safe parser supports.
+            # Preserve the original outcome/error code for those inputs.
+            parsed = yaml.safe_load(snapshot)
     except (yaml.YAMLError, RecursionError):
         raise StellarMappingError("invalid_accessibility_snapshot") from None
     if not isinstance(parsed, list) or len(parsed) > 1000:
@@ -116,7 +141,9 @@ def _measurements(text):
     return result
 
 
-def map_stellar_capture(report: dict, *, capture_sha256: str, allow_color_selection=False) -> dict:
+def map_stellar_capture(
+    report: dict, *, capture_sha256: str, allow_color_selection=False, allow_main_sequence_fields=False
+) -> dict:
     if (
         report.get("schema_version") != 1
         or report.get("mode") != "read_only_browser_preflight"
@@ -147,10 +174,11 @@ def map_stellar_capture(report: dict, *, capture_sha256: str, allow_color_select
         raise StellarMappingError("not_stellar_detail_screen")
     measurements = _measurements(sections[0])
     numeric_controls = [c for c in frame["controls"] if c["role"] in {"textbox", "spinbutton"}]
-    if len(numeric_controls) != 3:
+    conditional = len(numeric_controls) == 6 and allow_main_sequence_fields
+    if len(numeric_controls) != 3 and not conditional:
         raise StellarMappingError("unsupported_conditional_or_ambiguous_fields")
     color_controls = [c for c in frame["controls"] if c["role"] == "combobox"]
-    if len(color_controls) != 1:
+    if len(color_controls) != (2 if conditional else 1):
         raise StellarMappingError("ambiguous_color_control")
     ids = [c["id"] for c in frame["controls"]]
     if len(ids) != len(set(ids)):
@@ -158,6 +186,8 @@ def map_stellar_capture(report: dict, *, capture_sha256: str, allow_color_select
     if any(not ident.startswith(frame["id"] + ":") for ident in ids):
         raise StellarMappingError("control_frame_mismatch")
     context, fields, colors, position = [], {}, None, 0
+    lifetime_prefix = None
+    field_labels = {**FIELDS, **(CONDITIONAL_FIELDS if conditional else {})}
     for key, value in atoms:
         role = _role(key)
         if key in {"text", "subscript"}:
@@ -169,6 +199,33 @@ def map_stellar_capture(report: dict, *, capture_sha256: str, allow_color_select
         preceding = re.split(r"\byour reconstruction\b", " ".join(context), flags=re.IGNORECASE)[-1]
         label = re.sub(r"\s+", "", preceding.casefold())
         if role == "combobox":
+            if conditional and not label and list(fields)[-1:] == ["lifetime"]:
+                if lifetime_prefix is not None or not isinstance(value, list):
+                    raise StellarMappingError("ambiguous_lifetime_prefix")
+                normalized = [v.removesuffix(" [selected]") for v in value if isinstance(v, str)]
+                selected = [
+                    v.removesuffix(" [selected]")
+                    for v in value
+                    if isinstance(v, str) and v.endswith(" [selected]")
+                ]
+                expected = ["option", *[f'option "{p}"' for p in LIFETIME_PREFIXES]]
+                if normalized != expected or len(selected) != 1:
+                    raise StellarMappingError("unsupported_lifetime_prefix")
+                control = color_controls[1]
+                if _control_atom(control["accessibility"]) != (key, value):
+                    raise StellarMappingError("control_snapshot_mismatch")
+                prefix = (
+                    None if selected[0] == "option" else LIFETIME_PREFIXES[expected.index(selected[0]) - 1]
+                )
+                lifetime_prefix = {
+                    "capture_target_id": control["id"],
+                    "options": LIFETIME_PREFIXES.copy(),
+                    "selected": prefix,
+                }
+                fields["lifetime"]["unit"] = prefix
+                fields["lifetime"]["calculation_unit"] = "yr"
+                context = []
+                continue
             if label not in {"peakλcolor", "peakwavelengthcolor"} or colors is not None:
                 raise StellarMappingError("unmapped_color_label")
             expected_options = [f'option "{name}"' for name in COLOR_OPTIONS]
@@ -196,9 +253,9 @@ def map_stellar_capture(report: dict, *, capture_sha256: str, allow_color_select
                 "selected": COLOR_OPTIONS[expected_options.index(selected[0])] if selected else None,
             }
         else:
-            if label not in FIELDS or position >= len(numeric_controls):
+            if label not in field_labels or position >= len(numeric_controls):
                 raise StellarMappingError("unmapped_numeric_label")
-            name, unit = FIELDS[label]
+            name, unit = field_labels[label]
             if name in fields:
                 raise StellarMappingError("duplicate_numeric_field")
             control = numeric_controls[position]
@@ -216,7 +273,10 @@ def map_stellar_capture(report: dict, *, capture_sha256: str, allow_color_select
             }
             position += 1
         context = []
-    if set(fields) != {"distance", "luminosity", "temperature"} or colors is None:
+    required = {"distance", "luminosity", "temperature"} | (
+        {"mass", "radius", "lifetime"} if conditional else set()
+    )
+    if set(fields) != required or colors is None or (conditional and lifetime_prefix is None):
         raise StellarMappingError("incomplete_field_map")
     # The four class words are choices, not a selected class. Do not invent one.
     for label in ("main sequence", "red giant", "supergiant", "white dwarf"):
@@ -252,6 +312,9 @@ def map_stellar_capture(report: dict, *, capture_sha256: str, allow_color_select
             "mapping_ready": True,
         },
     )
+    if allow_main_sequence_fields:
+        observation.values["lifetime_prefix"] = lifetime_prefix
+        observation.values["conditional_fields_visible"] = conditional
     return {
         "schema_version": 1,
         "mode": "offline_stellar_field_mapping",

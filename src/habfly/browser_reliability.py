@@ -123,11 +123,28 @@ def _result(runtime, output, *, elapsed, failure, star, case_hash):
 
 
 def run_reliability(options: RunOptions, output: Path, *, runs: int, credentials, notify=print):
+    return _run_reliability(
+        options,
+        output,
+        runs=runs,
+        credentials=credentials,
+        notify=notify,
+        task="browser_numeric",
+        scope="autonomous_three_field_browser_reliability",
+        pass_key="numeric_transport_passed",
+        identity_keys=("checkpoint_sha256", "graph_hash", "knowledge_pack_hash"),
+        result_reader=_result,
+        run_seconds=RUN_SECONDS,
+        write_limit=3,
+    )
+
+
+def validate_batch(options, runs, credentials, *, task):
     """No retries, no budget expansion; the first failed/aborted run ends the batch."""
-    if not 1 <= runs <= MAX_RUNS:
+    if type(runs) is not int or not 1 <= runs <= MAX_RUNS:
         raise ValueError(f"Choose 1–{MAX_RUNS} reliability runs")
     if (
-        options.task != "browser_numeric"
+        options.task != task
         or options.browser_execution != "autonomous"
         or options.browser_setup != "automatic"
         or options.paused
@@ -136,12 +153,32 @@ def run_reliability(options: RunOptions, output: Path, *, runs: int, credentials
         raise ValueError("Reliability runs require the running one-star autonomous profile")
     if len(credentials) != 2 or not all(credentials):
         raise ValueError("Both local login credentials are required")
+
+
+def _run_reliability(
+    options,
+    output,
+    *,
+    runs,
+    credentials,
+    notify,
+    task,
+    scope,
+    pass_key,
+    identity_keys,
+    result_reader,
+    run_seconds,
+    write_limit,
+    initial_identity=None,
+):
+    """Shared lifecycle; task-specific evidence readers cannot affect live decisions."""
+    validate_batch(options, runs, credentials, task=task)
     output = Path(output)
     output.mkdir(parents=True, exist_ok=False)
     options = options.model_copy(update={"artifact_dir": output / "runs"})
     report = {
         "schema_version": 1,
-        "scope": "autonomous_three_field_browser_reliability",
+        "scope": scope,
         "requested_runs": runs,
         "attempted_runs": 0,
         "passed_runs": 0,
@@ -154,7 +191,8 @@ def run_reliability(options: RunOptions, output: Path, *, runs: int, credentials
         "fresh_accounts_provisioned": False,
         "allow_submission": False,
         "stop_on_first_failure": True,
-        "run_time_limit_seconds": RUN_SECONDS,
+        "run_time_limit_seconds": run_seconds,
+        "max_native_writes_per_run": write_limit,
         "calibration_scope": "browser_transfer_not_calibrated",
         "memory_scope": "python_runner_peak_rss_excludes_browser",
         "runs": [],
@@ -162,7 +200,7 @@ def run_reliability(options: RunOptions, output: Path, *, runs: int, credentials
 
     def save():
         report["attempted_runs"] = len(report["runs"])
-        report["passed_runs"] = sum(r["numeric_transport_passed"] for r in report["runs"])
+        report["passed_runs"] = sum(r[pass_key] for r in report["runs"])
         report["unique_stars"] = len({r["star_name"] for r in report["runs"] if r["star_name"]})
         report["unique_measurement_cases"] = len(
             {r["measurement_case_sha256"] for r in report["runs"] if r["measurement_case_sha256"]}
@@ -181,12 +219,14 @@ def run_reliability(options: RunOptions, output: Path, *, runs: int, credentials
     save()
     try:
         for index in range(runs):
-            notify(f"Run {index + 1}/{runs}: fresh browser, at most three writes; Ctrl-C ends the batch.")
+            notify(
+                f"Run {index + 1}/{runs}: fresh browser, at most {write_limit} writes; Ctrl-C ends the batch."
+            )
             runtime = Runtime(ProgressOutput(notify))
+            runtime.expected_browser_identity = initial_identity
             if report["runs"]:
                 runtime.expected_browser_identity = {
-                    key: report["runs"][0]["provenance"][key]
-                    for key in ("checkpoint_sha256", "graph_hash", "knowledge_pack_hash")
+                    key: report["runs"][0]["provenance"][key] for key in identity_keys
                 }
             started, failure, star, case_hash = time.monotonic(), None, None, None
             try:
@@ -194,7 +234,7 @@ def run_reliability(options: RunOptions, output: Path, *, runs: int, credentials
                     os.environ[key] = value
                 runtime.command({"command": "start", "payload": options.model_dump(mode="json")})
                 while runtime.status == "running":
-                    if time.monotonic() - started >= RUN_SECONDS:
+                    if time.monotonic() - started >= run_seconds:
                         failure = "reliability_time_limit"
                         runtime.env.outcome = failure
                         runtime.command({"command": "abort"})
@@ -222,7 +262,7 @@ def run_reliability(options: RunOptions, output: Path, *, runs: int, credentials
                     if runtime.trace:
                         runtime.trace.close()
             try:
-                result = _result(
+                result = result_reader(
                     runtime,
                     output,
                     elapsed=time.monotonic() - started,
@@ -233,7 +273,7 @@ def run_reliability(options: RunOptions, output: Path, *, runs: int, credentials
             except Exception:  # noqa: BLE001 - retain the failed attempt without echoing artifact contents
                 result = {
                     "run_id": runtime.run_id,
-                    "numeric_transport_passed": False,
+                    pass_key: False,
                     "failure_reason": failure or "artifact_verification_failed",
                     "star_name": star,
                     "measurement_case_sha256": case_hash,
@@ -243,17 +283,20 @@ def run_reliability(options: RunOptions, output: Path, *, runs: int, credentials
                     "metrics_available": False,
                 }
             # All cases in the batch must use the same frozen identities.
-            if report["runs"] and result["numeric_transport_passed"]:
-                keys = ("checkpoint_sha256", "graph_hash", "knowledge_pack_hash")
-                if any(result["provenance"].get(k) != report["runs"][0]["provenance"].get(k) for k in keys):
-                    result.update(numeric_transport_passed=False, failure_reason="batch_provenance_changed")
+            expected = initial_identity or (report["runs"][0]["provenance"] if report["runs"] else None)
+            if (
+                expected
+                and result[pass_key]
+                and any(result["provenance"].get(k) != expected.get(k) for k in identity_keys)
+            ):
+                result.update({pass_key: False, "failure_reason": "batch_provenance_changed"})
             report["runs"].append(result)
             save()
             notify(
-                f"Run {index + 1}: {'PASS' if result['numeric_transport_passed'] else 'STOP'}; "
+                f"Run {index + 1}: {'PASS' if result[pass_key] else 'STOP'}; "
                 f"{result['learned_decisions']} decisions, {result['write_attempts']} writes."
             )
-            if not result["numeric_transport_passed"]:
+            if not result[pass_key]:
                 break
     except KeyboardInterrupt:
         report["batch_stop_reason"] = "operator_aborted"

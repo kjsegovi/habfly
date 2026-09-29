@@ -12,6 +12,7 @@ from playwright.sync_api import Error as PlaywrightError
 from pydantic import Field, model_validator
 
 from .contracts import Action, ActionKind, Contract, Control, Observation, StepResult, validate_action
+from .presentation_capture import evidence_screenshot
 
 logger = logging.getLogger(__name__)
 
@@ -268,7 +269,7 @@ class TorusBrowser:
         chart_control = next((c for c in controls if c.role == "chart"), None)
         if chart_control and not tooltip and self.run_dir:
             crop_path = self.run_dir / f"chart-{self.revision:05}.png"
-            targets[chart_control.id].screenshot(path=str(crop_path))
+            evidence_screenshot(targets[chart_control.id], path=str(crop_path))
             crop = str(crop_path.resolve())
         modalities = ["text", "controls"] + (["chart_pixels"] if crop else [])
         observation = Observation(
@@ -389,7 +390,7 @@ class TorusBrowser:
             # Never capture a login form or storage state as a failure artifact.
             if reason != "authentication_required" and self.run_dir:
                 try:
-                    self.page.screenshot(path=str(self.run_dir / "failure.png"))
+                    evidence_screenshot(self.page, path=str(self.run_dir / "failure.png"))
                 except (PlaywrightError, OSError) as screenshot_error:
                     logger.warning(
                         "Unable to capture browser failure evidence: %s", type(screenshot_error).__name__

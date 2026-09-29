@@ -1,0 +1,44 @@
+{
+  "schema_version": 1,
+  "id": "habitability_physical_candidate_v1",
+  "validation_scope": "independent_energy_balance_course_pending",
+  "assumptions": ["terrestrial_planet", "blackbody_emission", "full_surface_heat_redistribution", "negligible_internal_heating"],
+  "operations": [
+    {
+      "id": "equilibrium_temp",
+      "description": "Blackbody radiative equilibrium before greenhouse warming. Luminosity is solar, orbital radius is au, Bond albedo is a fraction, not percent.",
+      "inputs": {
+        "stellar_luminosity": {"quantity": "stellar_luminosity", "unit": "Lsun"},
+        "orbital_radius": {"quantity": "orbital_radius", "unit": "au"},
+        "albedo": {"quantity": "albedo", "unit": "fraction", "positive": false}
+      },
+      "expression": "(stellar_luminosity * solar_watts * (1-albedo) / (16*pi*sigma*(orbital_radius*au_meters)**2))**0.25",
+      "constants": {"solar_watts": 3.827e26, "au_meters": 149597870700, "sigma": 5.670374419e-8, "pi": 3.141592653589793},
+      "output_unit": "K",
+      "sources": [
+        {"url": "https://lasp.colorado.edu/mop/files/2018/08/Chapter-7.pdf", "reference": "Equation 7.1: absorbed cross-section power equals emission over the full surface; L/(4*pi*r^2) supplies irradiance."},
+        {"url": "https://life-space-mission.com/wp-content/uploads/2024/05/2310.02634v3.pdf", "reference": "Appendix D, equation D1, rearranged for equilibrium temperature."},
+        {"reference": "Solar watts preserved from the original worksheet F2; SI au and Stefan-Boltzmann constants are explicit physical-candidate constants, not a claimed course formula."}
+      ]
+    },
+    {
+      "id": "surface_temp",
+      "description": "Add the explicitly selected course greenhouse increment to equilibrium temperature. This is the course approximation, not a physical climate model.",
+      "inputs": {
+        "equilibrium_temp": {"quantity": "equilibrium_temp", "unit": "K"},
+        "greenhouse_increment": {"quantity": "greenhouse_increment", "unit": "K", "positive": false}
+      },
+      "expression": "equilibrium_temp+greenhouse_increment",
+      "output_unit": "K",
+      "sources": [{"reference": "Local HabWorlds preview, Greenhouse Strength visible help, captured 2026-09-25: None +0, Weak +10, Moderate +30, Strong +100 K."}]
+    }
+  ],
+  "greenhouse_bands": [
+    {"name": "none", "minimum": "0", "maximum": "0.49", "increment_kelvin": 0},
+    {"name": "weak", "minimum": "0.5", "maximum": "39.99", "increment_kelvin": 10},
+    {"name": "moderate", "minimum": "40", "maximum": "59.99", "increment_kelvin": 30},
+    {"name": "strong", "minimum": "60", "maximum": "100", "increment_kelvin": 100}
+  ],
+  "pending": ["Course equilibrium-temperature convention and rounding", "Visible gas identification and absorption workflow", "Values within gaps between the published greenhouse bands", "No-effect selection representation in native menu", "Pressure-temperature water-phase tool", "Representative habitability feedback and training references"],
+  "provenance": {"mode": "local_tool_assisted_reference_candidate", "spreadsheet_modified": "false", "gas_inference": "not_implemented", "water_phase_inference": "not_implemented", "course_validation": "pending"}
+}

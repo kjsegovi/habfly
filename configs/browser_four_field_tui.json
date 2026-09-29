@@ -1,0 +1,18 @@
+{
+  "task": "browser_four_field",
+  "environment": "browser",
+  "policy": "checkpoint",
+  "calculation_backend": "local",
+  "graph": "data/processed/graphs-v2/graph-2000",
+  "checkpoint": "experiments/temperature-source-003/training/checkpoint.pt",
+  "dataset": "experiments/temperature-source-003",
+  "color_checkpoint": "experiments/color-pilot-006/training/checkpoint.pt",
+  "color_dataset": "experiments/color-pilot-006",
+  "browser_config": "configs/browser_probe.example.json",
+  "browser_setup": "automatic",
+  "browser_execution": "supervised",
+  "seed": 5500000,
+  "stars": 1,
+  "paused": true,
+  "artifact_dir": "experiments/browser-four-field"
+}

@@ -13,6 +13,7 @@ import torch
 from torch import nn
 from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
 
+from . import habitability_tool_state, planet_tool_state
 from .measurement_identity import MeasurementIdentityPointer, measurement_request
 from .source_request import SourceRequestPointer
 from .tokenizer import CharacterTokenizer
@@ -182,6 +183,7 @@ class ConnectomePolicy(nn.Module):
         selection_mode: str = "characters",
         control_encoding: str = "characters",
         color_readout: str = "linear_v1",
+        color_input: str = "workflow_v1",
     ):
         super().__init__()
         if hidden_size < 4 or propagation_steps < 1 or max_answer_length < 2:
@@ -197,6 +199,8 @@ class ConnectomePolicy(nn.Module):
             "structured_tool_v4",
             "structured_tool_v5",
             "structured_tool_v6",
+            "structured_planet_tool_v1",
+            "structured_habitability_tool_v1",
             "structured_color_v1",
         ):
             raise ValueError("Unknown observation encoding")
@@ -215,9 +219,35 @@ class ConnectomePolicy(nn.Module):
         ):
             raise ValueError("Incompatible color readout")
         self.color_readout = color_readout
+        if color_input not in ("workflow_v1", "selected_graph_v1") or (
+            color_input != "workflow_v1" and observation_encoding != "structured_color_v1"
+        ):
+            raise ValueError("Incompatible color input")
+        self.color_input = color_input
         self.selection_mode = selection_mode
-        if control_encoding not in ("characters", "semantic_tool_v1", "semantic_color_v1"):
+        if control_encoding not in (
+            "characters",
+            "semantic_tool_v1",
+            "semantic_color_v1",
+            "semantic_planet_tool_v1",
+            "semantic_habitability_tool_v1",
+        ):
             raise ValueError("Unknown control encoding")
+        if (observation_encoding == "structured_planet_tool_v1") != (
+            control_encoding == "semantic_planet_tool_v1"
+        ) or (
+            observation_encoding == "structured_planet_tool_v1" and selection_mode != "measurement_result_v3"
+        ):
+            raise ValueError("Planet encoding requires its versioned control and option-pointer contract")
+        if (observation_encoding == "structured_habitability_tool_v1") != (
+            control_encoding == "semantic_habitability_tool_v1"
+        ) or (
+            observation_encoding == "structured_habitability_tool_v1"
+            and selection_mode != "measurement_result_v3"
+        ):
+            raise ValueError(
+                "Habitability encoding requires its versioned control and option-pointer contract"
+            )
         self.control_encoding = control_encoding
         self.graph_hash = graph_fingerprint(graph)
         self.action_temperature = 1.0
@@ -241,6 +271,14 @@ class ConnectomePolicy(nn.Module):
         self.chart_encoder = ChartEncoder(hidden_size)
         if control_encoding == "semantic_tool_v1":
             self.control_projection = nn.Linear(len(CONTROL_LABELS), hidden_size, bias=False)
+        if control_encoding == "semantic_planet_tool_v1":
+            self.control_projection = nn.Linear(
+                len(planet_tool_state.CONTROL_LABELS), hidden_size, bias=False
+            )
+        if control_encoding == "semantic_habitability_tool_v1":
+            self.control_projection = nn.Linear(
+                len(habitability_tool_state.CONTROL_LABELS), hidden_size, bias=False
+            )
         if control_encoding == "semantic_color_v1":
             from habfly.color_reference import COLOR_CONTROLS
 
@@ -259,8 +297,19 @@ class ConnectomePolicy(nn.Module):
             self.tool_state_projection = nn.Linear(STATE_WIDTH, hidden_size)
         if observation_encoding in {"structured_tool_v5", "structured_tool_v6"}:
             self.tool_state_projection = nn.Linear(TASK_STATE_WIDTH, hidden_size)
+        if observation_encoding == "structured_planet_tool_v1":
+            self.tool_state_projection = nn.Linear(planet_tool_state.STATE_WIDTH, hidden_size)
+        if observation_encoding == "structured_habitability_tool_v1":
+            self.tool_state_projection = nn.Linear(habitability_tool_state.STATE_WIDTH, hidden_size)
         if selection_mode == "measurement_result_v3":
-            self.option_projection = nn.Linear(OPTION_WIDTH, hidden_size, bias=False)
+            width = (
+                planet_tool_state.OPTION_WIDTH
+                if observation_encoding == "structured_planet_tool_v1"
+                else habitability_tool_state.OPTION_WIDTH
+                if observation_encoding == "structured_habitability_tool_v1"
+                else OPTION_WIDTH
+            )
+            self.option_projection = nn.Linear(width, hidden_size, bias=False)
             self.option_query = nn.Linear(hidden_size, hidden_size, bias=False)
         # Conditional construction keeps strict loading of old checkpoints unchanged.
         if selection_mode in ("measurement_identity_v1", "measurement_source_v2", "measurement_result_v3"):
@@ -307,6 +356,7 @@ class ConnectomePolicy(nn.Module):
             "control_encoding": self.control_encoding,
             # Omit the default to preserve old numeric and linear-color manifests.
             **({"color_readout": self.color_readout} if self.color_readout != "linear_v1" else {}),
+            **({"color_input": self.color_input} if self.color_input != "workflow_v1" else {}),
         }
 
     def tool_features(self, observation: Any) -> torch.Tensor:
@@ -349,6 +399,25 @@ class ConnectomePolicy(nn.Module):
         folded = vector.new_zeros(self.hidden_size)
         return folded.scatter_add(0, torch.arange(16, device=self.device) % self.hidden_size, vector)
 
+    def selected_color_activity(self, observation: Any) -> tuple[torch.Tensor, torch.Tensor]:
+        """Fresh pass through the SAME biological core, using the selected value only.
+
+        Neither text/context nor previous recurrent activity enters this path.
+        No thresholds, reference labels, source repair, or numeric readout bypass.
+        """
+        from habfly.color_reference import color_features
+
+        features = color_features(as_dict(observation))
+        if not features[0]:
+            raise ValueError("color_selected_measurement_invalid")
+        encoded = self.color_projection(self.embedding.weight.new_tensor([[1.0, features[1], 0.0]]))
+        return self.propagate(encoded, None)
+
+    def color_readout_features(self, observation: Any, pooled: torch.Tensor) -> torch.Tensor:
+        if self.color_input == "selected_graph_v1":
+            return self.selected_color_activity(observation)[1]
+        return pooled
+
     def option_scores(self, observation: Any, control: Any, pooled: torch.Tensor) -> torch.Tensor:
         """Rank actual visible options using their visible metadata, not generated IDs."""
         obs, target = as_dict(observation), as_dict(control)
@@ -361,7 +430,7 @@ class ConnectomePolicy(nn.Module):
                     raise ValueError("Color option inventory mismatch")
                 # Semantic option identity, not menu position. All logits depend
                 # on the biological readout; no reference oracle is called here.
-                logits = self.color_head(pooled)[0]
+                logits = self.color_head(self.color_readout_features(observation, pooled))[0]
                 return logits[[COLOR_LABELS.index(option) for option in options]]
         if self.selection_mode in (
             "measurement_identity_v1",
@@ -393,7 +462,11 @@ class ConnectomePolicy(nn.Module):
         if self.selection_mode == "measurement_result_v3":
             features = keys.new_tensor(
                 [
-                    option_features(obs, option, years=self.observation_encoding == "structured_tool_v6")
+                    planet_tool_state.planet_option_features(obs, option)
+                    if self.observation_encoding == "structured_planet_tool_v1"
+                    else habitability_tool_state.habitability_option_features(obs, option)
+                    if self.observation_encoding == "structured_habitability_tool_v1"
+                    else option_features(obs, option, years=self.observation_encoding == "structured_tool_v6")
                     for option in target["options"]
                 ]
             )
@@ -564,6 +637,16 @@ class ConnectomePolicy(nn.Module):
         if self.observation_encoding in {"structured_tool_v5", "structured_tool_v6"}:
             features = encoded.new_tensor([task_state_features(as_dict(o)) for o in observations])
             encoded = encoded + self.tool_state_projection(features)
+        if self.observation_encoding == "structured_planet_tool_v1":
+            features = encoded.new_tensor(
+                [planet_tool_state.planet_state_features(as_dict(o)) for o in observations]
+            )
+            encoded = encoded + self.tool_state_projection(features)
+        if self.observation_encoding == "structured_habitability_tool_v1":
+            features = encoded.new_tensor(
+                [habitability_tool_state.habitability_state_features(as_dict(o)) for o in observations]
+            )
+            encoded = encoded + self.tool_state_projection(features)
         if self.observation_encoding == "structured_color_v1":
             from habfly.color_reference import color_features
 
@@ -579,6 +662,19 @@ class ConnectomePolicy(nn.Module):
                 keys = self.encode_controls(candidates, target=True)
                 if self.control_encoding == "semantic_tool_v1":
                     features = keys.new_tensor([control_features(as_dict(c)) for c in candidates])
+                    keys = keys + self.control_projection(features)
+                if self.control_encoding == "semantic_planet_tool_v1":
+                    features = keys.new_tensor(
+                        [planet_tool_state.planet_control_features(as_dict(c)) for c in candidates]
+                    )
+                    keys = keys + self.control_projection(features)
+                if self.control_encoding == "semantic_habitability_tool_v1":
+                    features = keys.new_tensor(
+                        [
+                            habitability_tool_state.habitability_control_features(as_dict(c))
+                            for c in candidates
+                        ]
+                    )
                     keys = keys + self.control_projection(features)
                 if self.control_encoding == "semantic_color_v1":
                     from habfly.color_reference import COLOR_CONTROLS
@@ -679,6 +775,14 @@ class ConnectomePolicy(nn.Module):
             fields.update(dx=float(output.pointer[0, 2]) * 2 - 1, dy=float(output.pointer[0, 3]) * 2 - 1)
         action = Action(**fields)
         diagnostics = self.neural_activity(output.state)
+        if self.color_input == "selected_graph_v1" and kind == "SELECT":
+            from habfly.color_reference import COLOR_CONTROL
+
+            if target.get("label") == COLOR_CONTROL:
+                color_state, _ = self.selected_color_activity(observation)
+                diagnostics = self.neural_activity(color_state)
+                diagnostics["activity_pathway"] = "selected_measurement_color_graph"
+                diagnostics["workflow_activity"] = self.neural_activity(output.state)
         diagnostics.update(
             {
                 "action_probability": float(ap[action_index]),

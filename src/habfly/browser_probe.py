@@ -75,6 +75,9 @@ class BrowserProbeConfig(Contract):
     allow_submission: Literal[False] = False
     max_text_chars: int = Field(default=40000, ge=100, le=100000)
     max_controls: int = Field(default=250, ge=1, le=1000)
+    # Capture-local handles preserve the observation format while avoiding
+    # repeated native-control lookup. Never retain them for later actions.
+    pinned_control_capture: bool = Field(default=False, strict=True)
 
     @model_validator(mode="after")
     def validate_boundary(self):
@@ -204,7 +207,26 @@ def _read_controls(frame, frame_id: str, config: BrowserProbeConfig):
     controls = []
     for role in ("button", "link", "textbox", "spinbutton", "combobox", "checkbox", "radio"):
         for item in frame.get_by_role(role).all():
-            if not item.is_visible() or item.get_attribute("aria-hidden") == "true":
+            if not item.is_visible():
+                continue
+            # Combine the native-value metadata reads, not every control read:
+            # evaluate has higher overhead than get_attribute for plain buttons.
+            # Keep Playwright's visibility, AX and enabled semantics; never read
+            # values of hidden nodes or custom widget properties.
+            read_value = role in {"textbox", "spinbutton", "combobox"}
+            metadata = (
+                item.evaluate(
+                    """element => {
+                        if (element.getAttribute('aria-hidden') === 'true') return {hidden:true};
+                        const native = element instanceof HTMLInputElement ||
+                            element instanceof HTMLTextAreaElement || element instanceof HTMLSelectElement;
+                        return {hidden:false, value:native ? element.value : null};
+                    }"""
+                )
+                if read_value
+                else {"hidden": item.get_attribute("aria-hidden") == "true"}
+            )
+            if metadata["hidden"]:
                 continue
             snapshot = item.aria_snapshot(timeout=3000)
             label = snapshot.splitlines()[0] if snapshot else "Unlabelled control"
@@ -221,17 +243,84 @@ def _read_controls(frame, frame_id: str, config: BrowserProbeConfig):
             )
             normalized = normalized_control_label(label)
             controls[-1]["protected"] = any(name in normalized for name in PROTECTED_LABELS)
-            if role in {"textbox", "spinbutton", "combobox"}:
+            if read_value:
                 # Rendered native value is distinct from an accessible name/placeholder.
                 # Do not read custom widgets' hidden state or arbitrary properties.
-                tag = item.evaluate("element => element.tagName.toLowerCase()")
-                controls[-1]["value"] = item.input_value() if tag in {"input", "textarea", "select"} else None
+                controls[-1]["value"] = metadata["value"]
             if len(controls) > config.max_controls:
                 raise BrowserSafetyStop("control_budget_exceeded")
     return controls
 
 
-def _read_frame(frame, frame_id: str, config: BrowserProbeConfig):
+def _read_controls_pinned(frame, frame_id: str, config: BrowserProbeConfig):
+    """Opt-in fresh-handle inventory; never retain nodes across captures.
+
+    Locator AX snapshots preserve the existing evidence format. A final whole
+    role inventory comparison rejects ordinal rebinding, replacement, removal,
+    additions, and role/visibility changes before accepting any captured data.
+    """
+    from playwright.sync_api import Error as PlaywrightError
+
+    roles = ("button", "link", "textbox", "spinbutton", "combobox", "checkbox", "radio")
+    pinned, controls = {}, []
+    try:
+        for role in roles:
+            pinned[role] = frame.get_by_role(role).element_handles()
+        for role in roles:
+            for index, handle in enumerate(pinned[role]):
+                if not handle.is_visible():
+                    continue
+                read_value = role in {"textbox", "spinbutton", "combobox"}
+                metadata = handle.evaluate(
+                    """(element, readValue) => {
+                        if (element.getAttribute('aria-hidden') === 'true') return {hidden:true};
+                        const native = element instanceof HTMLInputElement ||
+                            element instanceof HTMLTextAreaElement || element instanceof HTMLSelectElement;
+                        return {hidden:false, value:readValue && native ? element.value : null};
+                    }""",
+                    read_value,
+                )
+                if metadata["hidden"]:
+                    continue
+                snapshot = frame.get_by_role(role).nth(index).aria_snapshot(timeout=3000)
+                label = snapshot.splitlines()[0] if snapshot else "Unlabelled control"
+                normalized = normalized_control_label(label)
+                control = {
+                    "id": f"{frame_id}:c{len(controls)}",
+                    "role": role,
+                    "accessibility": snapshot,
+                    "enabled": handle.is_enabled(),
+                    "actions": [],
+                    "protected": any(name in normalized for name in PROTECTED_LABELS),
+                }
+                if read_value:
+                    control["value"] = metadata["value"]
+                controls.append(control)
+                if len(controls) > config.max_controls:
+                    raise BrowserSafetyStop("control_budget_exceeded")
+        for role in roles:
+            if not frame.get_by_role(role).evaluate_all(
+                """(current, pinned) => current.length === pinned.length &&
+                    current.every((element, index) => element.isConnected &&
+                        pinned[index].isConnected && element === pinned[index])""",
+                pinned[role],
+            ):
+                raise BrowserSafetyStop("control_inventory_changed_during_observation")
+        return controls
+    finally:
+        for handles in pinned.values():
+            for handle in handles:
+                try:
+                    handle.dispose()
+                except PlaywrightError:
+                    # A closed/detached driver may prevent cleanup; do not
+                    # replace the original capture failure with that error.
+                    continue
+
+
+def _read_frame(frame, frame_id: str, config: BrowserProbeConfig, *, pin_controls=False):
+    if type(pin_controls) is not bool:
+        raise ValueError("pin_controls must be a boolean")
     _check_auth_and_modals(frame)
     body = frame.locator("body")
     # Visible text/AX only: no scripts, app state, data-* attributes or answer keys.
@@ -243,21 +332,34 @@ def _read_frame(frame, frame_id: str, config: BrowserProbeConfig):
         "url": public_url(frame.url),
         "text": text,
         "accessibility": accessibility,
-        "controls": _read_controls(frame, frame_id, config),
+        "controls": (
+            _read_controls_pinned(frame, frame_id, config)
+            if pin_controls
+            else _read_controls(frame, frame_id, config)
+        ),
     }
 
 
-def inspect_page(page, config: BrowserProbeConfig) -> dict:
+def inspect_page(page, config: BrowserProbeConfig, *, pin_controls=False) -> dict:
     """Capture one current screen without navigation, clicks, typing, or scoring.
 
     Authentication/bootstrap is owned by the human. Only known frame URLs are
     eligible for content extraction; frame identity/count/readiness is fail-closed.
     No screenshot, browser trace, cookies or storage state is exported.
     """
+    if type(pin_controls) is not bool:
+        raise ValueError("pin_controls must be a boolean")
+    if type(config.pinned_control_capture) is not bool:
+        raise ValueError("pinned_control_capture must be a boolean")
+    pin_controls = pin_controls or config.pinned_control_capture
     if not config.allows(page.url):
         raise BrowserSafetyStop("navigation_outside_activity")
     _check_auth_and_modals(page.main_frame)
-    outer_controls = _read_controls(page.main_frame, "outer", config)
+    outer_controls = (
+        _read_controls_pinned(page.main_frame, "outer", config)
+        if pin_controls
+        else _read_controls(page.main_frame, "outer", config)
+    )
     identities = {item.name: _url_identity(item.url) for item in config.frames}
     matches = {item.name: [] for item in config.frames}
     ignored = []
@@ -279,7 +381,11 @@ def inspect_page(page, config: BrowserProbeConfig) -> dict:
     captured = []
     for rule in config.frames:
         for index, frame in enumerate(matches[rule.name]):
-            captured_frame = _read_frame(frame, f"{rule.name}-{index}", config)
+            captured_frame = (
+                _read_frame(frame, f"{rule.name}-{index}", config, pin_controls=True)
+                if pin_controls
+                else _read_frame(frame, f"{rule.name}-{index}", config)
+            )
             if any(text not in captured_frame["text"] for text in rule.required_text):
                 raise BrowserSafetyStop(f"frame_not_ready:{rule.name}")
             captured.append(captured_frame)

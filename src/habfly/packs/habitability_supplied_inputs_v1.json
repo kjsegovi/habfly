@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "id": "temperature_explicit_supplied_class_v1",
+  "scope": "independent_energy_balance_supplied_class_inputs_v1",
+  "base_pack_file_sha256": "806f8be3def21ae37b11432fc3964cc2f231b13206752d5bdb82b3a238fa2b47",
+  "base_pack_hash": "95fec7129d126ed7b5866916538f7df16833fecdad8e4606d74f63015abe23f5",
+  "classes": ["main_sequence", "white_dwarf", "red_giant", "supergiant"],
+  "input_authority": "explicit_supplied_current_star_luminosity_orbit_albedo_and_greenhouse_increment",
+  "applicability": "Evaluate the unchanged candidate energy-balance expressions only under every original explicit terrestrial-planet physics assumption. A supplied stellar class does not prove physical suitability, input reliability, habitability or course correctness.",
+  "excluded": ["stellar_relations", "class_inference", "gas_identification", "greenhouse_selection", "water_phase_inference", "habitability_decision", "course_applicability_claim", "native_browser_enablement", "training_oracle"],
+  "implementation": "Load the hash-pinned original pack and retain its formulas, constants, units, assumptions, greenhouse bands including gaps, pending items and provenance verbatim. Only operation class applicability changes under this explicit supplied-input scope."
+}

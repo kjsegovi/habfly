@@ -55,6 +55,10 @@ def save_checkpoint(path: str | Path, policy: ConnectomePolicy, *, stage: str, s
     provenance["graph_manifest_hash"] = source_hash(policy.graph.manifest)
     if content_pack and content_pack.get("task") == "stellar":
         provenance["stellar"] = content_pack
+    if content_pack and content_pack.get("task") == "planet_calculations":
+        provenance["planet_calculations"] = content_pack
+    if content_pack and content_pack.get("task") == "habitability_calculations":
+        provenance["habitability_calculations"] = content_pack
     manifest = CheckpointManifest.model_validate({
         "schema_version": 1, "model": policy.configuration(), "tokenizer": policy.tokenizer.config(),
         "tokenizer_hash": policy.tokenizer.fingerprint, "graph_hash": policy.graph_hash,

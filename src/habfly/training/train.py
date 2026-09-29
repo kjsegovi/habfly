@@ -12,6 +12,7 @@ import resource
 import sys
 import time
 from collections.abc import Callable
+from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
@@ -334,6 +335,7 @@ def train_behavioral_cloning(
     policy: ConnectomePolicy | None = None,
     sequence_length: int = 1,
     progress_callback: Callable[[dict], None] | None = None,
+    optimizer_state: dict | None = None,
 ) -> dict:
     # Opt in explicitly for bounded experiments; long existing stellar/Mini
     # trajectories retain their previous memory budget unless configured here.
@@ -341,6 +343,8 @@ def train_behavioral_cloning(
         raise ValueError("Behavioral cloning requires a positive integer sequence length")
     if not episodes or not validation_episodes:
         raise ValueError("Behavioral cloning needs separate training and validation episodes")
+    if optimizer_state is not None and policy is None:
+        raise ValueError("Optimizer resume requires an explicitly supplied matching policy")
     train_hashes = {source_hash(episode) for episode in episodes}
     if train_hashes & {source_hash(episode) for episode in validation_episodes}:
         raise ValueError("Training and validation trajectories overlap")
@@ -360,6 +364,18 @@ def train_behavioral_cloning(
     valid = episodes_to_examples(validation_episodes)
     started = time.perf_counter()
     optimizer = torch.optim.AdamW(policy.parameters(), lr=learning_rate)
+    initial_optimizer_step = 0
+    if optimizer_state is not None:
+        optimizer.load_state_dict(deepcopy(optimizer_state))
+        if any(group["lr"] != learning_rate for group in optimizer.param_groups):
+            raise ValueError("Resumed optimizer learning rate differs from the explicit training rate")
+        for state in optimizer.state.values():
+            for value in state.values():
+                if isinstance(value, torch.Tensor) and not torch.isfinite(value).all():
+                    raise ValueError("Resumed optimizer contains nonfinite state")
+        initial_optimizer_step = max(
+            (int(state.get("step", 0)) for state in optimizer.state.values()), default=0
+        )
     losses = []
     optimizer_steps = supervised_decisions = 0
     rng = random.Random(seed)
@@ -416,6 +432,11 @@ def train_behavioral_cloning(
         test_lengths = [len(ep) for ep in validation_episodes]
     report = {
         "stage": "behavioral_cloning",
+        **(
+            {"optimizer_resumed": True, "optimizer_initial_step": initial_optimizer_step}
+            if optimizer_state is not None
+            else {}
+        ),
         "seed": seed,
         "epochs": epochs,
         "sequence_length": sequence_length,
@@ -436,6 +457,16 @@ def train_behavioral_cloning(
     }
     if content_pack and content_pack.get("task") == "stellar":
         report.update(task="stellar", calculation_mode=content_pack["calculation_mode"], content=content_pack)
+    if content_pack and content_pack.get("task") == "planet_calculations":
+        report.update(
+            task="planet_calculations",
+            calculation_mode=content_pack["calculation_mode"],
+            content=content_pack,
+            answer_metric_note=(
+                "The unused free-text answer head is not a numeric-answer score. "
+                "Exact tool copies are measured by closed_loop.numeric_answer_accuracy."
+            ),
+        )
     save_checkpoint(
         directory / "checkpoint.pt",
         policy,

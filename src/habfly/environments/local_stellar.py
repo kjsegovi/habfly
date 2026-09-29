@@ -14,6 +14,9 @@ from .stellar_common import LOCAL_TEMPLATES, UNITS, grade_fields
 class LocalStellarEnv(gym.Env):
     metadata: ClassVar[dict] = {"render_modes": ["ansi"]}
     backend = "local"
+    task_name = "stellar"
+    check_label = "Check stellar analysis"
+    quantity_units: ClassVar[dict] = UNITS
 
     def __init__(self, adapter, cases, *, max_steps=128):
         super().__init__()
@@ -59,6 +62,15 @@ class LocalStellarEnv(gym.Env):
     def sources(self):
         return {**self.case["measurements"], **{k: v for k, v in self.results.items() if v["valid"]}}
 
+    def task_instruction(self):
+        return LOCAL_TEMPLATES[self.case["split"]]
+
+    def reference_information(self):
+        return self.pack.references
+
+    def relevant_operations(self):
+        return self.case["required"]
+
     def observe(self):
         op = self.pack.operation(self.operation)
         controls = []
@@ -96,11 +108,11 @@ class LocalStellarEnv(gym.Env):
                 add(
                     f"unit_{field}",
                     f"Unit for {field}",
-                    list(UNITS.values()),
+                    list(self.quantity_units.values()),
                     self.units.get(field, ""),
                     surface="task",
                 )
-            add("check", "Check stellar analysis", surface="task")
+            add("check", self.check_label, surface="task")
             random.Random(self.case["seed"] + self.steps).shuffle(controls)
         card = (
             {
@@ -118,7 +130,7 @@ class LocalStellarEnv(gym.Env):
         )
         return Observation(
             revision=self.steps,
-            instruction=LOCAL_TEMPLATES[self.case["split"]],
+            instruction=self.task_instruction(),
             controls=controls,
             values={
                 "star_class": self.case["star_class"],
@@ -129,7 +141,7 @@ class LocalStellarEnv(gym.Env):
             },
             feedback=self.feedback,
             progress={
-                "task": "stellar",
+                "task": self.task_name,
                 "task_completed": self.completed,
                 "steps": self.steps,
                 "completed_fields": len(self.awarded),
@@ -141,7 +153,7 @@ class LocalStellarEnv(gym.Env):
                 "pack_hash": self.pack.checksum,
                 "catalog": {o.id: o.description for o in self.pack.operations},
                 "reference_card": card,
-                "reference_information": self.pack.references,
+                "reference_information": self.reference_information(),
                 "pending_knowledge": self.pack.pending,
                 "operation": self.operation,
                 "parameter": self.parameter,
@@ -195,7 +207,7 @@ class LocalStellarEnv(gym.Env):
                 self.feedback = "Waiting leaves the local tool unchanged."
             elif key == "operation":
                 self.metrics["calculation_attempts"] += 1
-                self.metrics["calculation_correct"] += int(action.value in self.case["required"])
+                self.metrics["calculation_correct"] += int(action.value in self.relevant_operations())
                 if self.operation != action.value:
                     # Completed history survives switching to another operation.
                     self.operation, self.parameter = action.value, ""
@@ -260,7 +272,7 @@ class LocalStellarEnv(gym.Env):
                 field = key[5:]
                 self.units[field] = action.value
                 self.metrics["unit_attempts"] += 1
-                self.metrics["unit_correct"] += int(action.value == UNITS[field])
+                self.metrics["unit_correct"] += int(action.value == self.quantity_units[field])
             elif key == "check":
                 correct, _ = self.grades()
                 components["new_correct_fields"] = len(correct - self.awarded)
@@ -268,7 +280,7 @@ class LocalStellarEnv(gym.Env):
                 self.completed = len(correct) == len(self.case["required"])
                 self.terminated = self.completed
                 self.feedback = (
-                    "Stellar task completed."
+                    f"{self.task_name.capitalize()} task completed."
                     if self.completed
                     else "One or more answers or units need correction."
                 )

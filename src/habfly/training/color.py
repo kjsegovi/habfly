@@ -229,7 +229,11 @@ def color_calibration(policy, examples):
                 state = output.state
                 target = next(c for c in example.observation.controls if c.id == example.action.target)
                 if target.label == COLOR_CONTROL:
-                    logits.append(policy.color_head(output.pooled)[0])
+                    logits.append(
+                        policy.color_head(policy.color_readout_features(example.observation, output.pooled))[
+                            0
+                        ]
+                    )
                     labels.append(COLOR_LABELS.index(example.action.value))
     return {
         **fit_temperature(torch.stack(logits), torch.tensor(labels)),
@@ -355,6 +359,7 @@ def finish_color_training(
         content["profile"] == "pilot"
         and dev["completion_rate"] >= 0.9
         and not (dev["invalid_actions"] or dev["reference_errors"])
+        and (extra_report or {}).get("regression_gate_passed", True)
     )
     report = {
         "scope": SCOPE,
@@ -391,7 +396,9 @@ def refinement_features(policy, episodes):
                 state = result.state
                 target = next(c for c in example.observation.controls if c.id == example.action.target)
                 if target.label == COLOR_CONTROL:
-                    features.append(result.pooled[0].detach().clone())
+                    features.append(
+                        policy.color_readout_features(example.observation, result.pooled)[0].detach().clone()
+                    )
                     labels.append(COLOR_LABELS.index(example.action.value))
                     choices += 1
             if choices != 1:
@@ -561,6 +568,7 @@ def load_color_experiment(directory, graph_path=GRAPH):
         or policy.hidden_size != 16
         or policy.graph_hash != content["graph_hash"]
         or policy.color_readout != content.get("color_readout", "linear_v1")
+        or policy.color_input != content.get("color_input", "workflow_v1")
     ):
         raise ValueError("Color model architecture mismatch")
     if policy.color_readout == "ordinal_v2":
@@ -572,10 +580,29 @@ def load_color_experiment(directory, graph_path=GRAPH):
             or report.get("optimizer_updates") != cap
             or refinement.get("additional_optimizer_update_cap") != cap
             or refinement.get("inherited_color_optimizer_updates") != cap
-            or report.get("cumulative_color_optimizer_updates") != 2 * cap
+            or (
+                not content.get("stabilization")
+                and report.get("cumulative_color_optimizer_updates") != 2 * cap
+            )
             or not report.get("frozen_workflow_verified")
         ):
             raise ValueError("Color refinement provenance mismatch")
+        if content.get("readout_ordering"):
+            from .color_ordering import validate_ordering
+
+            validate_ordering(directory, policy, reference, report)
+        elif content.get("selected_input"):
+            from .color_isolation import validate_isolation
+
+            validate_isolation(directory, policy, reference, report)
+        elif content.get("boundary_curriculum"):
+            from .color_boundary import validate_boundary_experiment
+
+            validate_boundary_experiment(directory, policy, reference, report)
+        elif content.get("stabilization"):
+            from .color_stabilization import validate_stabilization
+
+            validate_stabilization(directory, policy, report)
     return policy, reference, report
 
 
@@ -587,6 +614,7 @@ def development_gate(report):
         and dev["completed"] >= 15
         and dev["invalid_actions"] == 0
         and dev["reference_errors"] == 0
+        and (not report["content"].get("boundary_curriculum") or report.get("regression_gate_passed") is True)
     )
 
 
@@ -596,9 +624,12 @@ def test_color(directory, graph_path=GRAPH):
     if not report["ready_for_final_test"] or not development_gate(report):
         raise ValueError("Color development gate not passed; final test remains sealed")
     cases = color_cases("test", 100, reference)
-    validate_splits(
-        {s: read(directory / f"{s}.json") for s in ("train", "calibration", "development")} | {"test": cases}
-    )
+    splits = {s: read(directory / f"{s}.json") for s in ("train", "calibration", "development")}
+    if report["content"].get("boundary_curriculum"):
+        from .color_boundary import all_training_cases
+
+        splits["train"] = all_training_cases(directory)
+    validate_splits(splits | {"test": cases})
     result = evaluate(policy, reference, cases, directory / "final")
     # Do not promote a classifier that ignores a whole narrow band.
     per_band = all(v["completed"] / v["episodes"] >= 0.8 for v in result["per_color"].values())

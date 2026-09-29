@@ -118,6 +118,9 @@ class ColorSession(NumericSession):
     MAX_SECONDS = 120
     MAX_WRITES = 1
 
+    def _color_projection(self, report):
+        return color_projection(report)
+
     def __init__(self, page, config, journal, reference):
         super().__init__(page, config, journal)
         self.reference = reference
@@ -158,7 +161,8 @@ class ColorSession(NumericSession):
         if not 100 <= measurement["value"] <= 1800:
             raise BrowserSafetyStop("color_outside_training_domain")
 
-    def _resolve_color(self, frame, mapping):
+    @staticmethod
+    def _resolve_color(frame, mapping):
         choices = [item for item in frame.get_by_role("combobox").all() if item.is_visible()]
         if len(choices) != 1 or not choices[0].is_enabled():
             raise BrowserSafetyStop("ambiguous_or_disabled_color_control")
@@ -193,7 +197,12 @@ class ColorSession(NumericSession):
         )
         return color
 
-    def select_color(self, label, *, confirm):
+    def select_color(self, label, *, confirm, authorization="human_confirmation"):
+        if authorization not in {"human_confirmation", "autonomous_opt_in"} or (
+            authorization == "autonomous_opt_in"
+            and self.journal.provenance.get("browser_execution") != "autonomous"
+        ):
+            raise BrowserSafetyStop("color_authorization_not_enabled")
         if (
             self.journal.provenance.get("color_gate_passed") is not True
             or self.journal.provenance.get("color_reference_hash") != self.reference.checksum
@@ -225,7 +234,7 @@ class ColorSession(NumericSession):
                     raise BrowserSafetyStop("color_control_replaced")
                 if mapping["observation"]["values"]["color"]["selected"] != label:
                     raise BrowserSafetyStop("color_selection_readback_mismatch")
-                if digest(color_projection(self.report)) != digest(color_projection(report)):
+                if digest(self._color_projection(self.report)) != digest(self._color_projection(report)):
                     self.journal.record_screen_change("unrelated_state_changed_by_color", self.report, report)
                     raise BrowserSafetyStop("unrelated_state_changed_by_color")
                 self._guard()
@@ -233,6 +242,7 @@ class ColorSession(NumericSession):
             self.revision += 1
             self.journal.receipt = {
                 "selected_color": label,
+                "color_authorization": authorization,
                 "readback_verified": True,
                 "reference_hash": self.reference.checksum,
                 "correctness_verified": False,
@@ -295,7 +305,7 @@ class BrowserColorEnv(ColorEnv):
     def completed_selection(self):
         return bool(self.session.journal.receipt)
 
-    def step(self, action, *, confirm):
+    def step(self, action, *, confirm, authorization="human_confirmation"):
         self.session._current_color()
         action = Action.model_validate(action)
         control = validate_action(self.observe(), action)
@@ -307,7 +317,7 @@ class BrowserColorEnv(ColorEnv):
             if row["kind"] != "wavelength":
                 raise BrowserSafetyStop("incompatible_measurement_kind")
             self.reference.guard(row["value"], row["unit"])
-            if not self.session.select_color(action.value, confirm=confirm):
+            if not self.session.select_color(action.value, confirm=confirm, authorization=authorization):
                 raise BrowserSafetyStop("color_approval_declined")
         _, _, _, _, info = super().step(action)
         result = StepResult.model_validate(info["result"])

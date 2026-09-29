@@ -15,10 +15,90 @@ from .browser import BrowserSafetyStop
 from .browser_numeric import screen_identity
 from .browser_probe import _url_identity, _visible_frame, inspect_page
 from .browser_stellar import SIMULATION_URL, StellarMappingError, map_stellar_capture
+from .presentation_capture import evidence_screenshot
 
 
 class SetupStop(RuntimeError):
     """Carries only an allowlisted local reason, never driver exception text."""
+
+
+_LOGIN_OPERATIONS = frozenset(
+    {
+        "inspect_cookie_preferences",
+        "close_cookie_preferences",
+        "inspect_cookie_notice",
+        "close_cookie_notice",
+        "inspect_modal",
+        "locate_email",
+        "locate_password",
+        "locate_submit",
+        "validate_form_initial",
+        "inspect_field_types",
+        "signing_in_callback",
+        "validate_form_before_email",
+        "fill_email",
+        "validate_form_after_email",
+        "fill_password",
+        "validate_form_after_password",
+        "inspect_login_exposure",
+        "waiting_for_login_ui_callback",
+        "validate_form_before_submit",
+        "submit_click",
+    }
+)
+
+
+def _login_failure_code(operation, exception):
+    """Classify without inspecting exception text, names, arguments or causes.
+
+    These are fixed class-family labels, not arbitrary exception class names.
+    In particular a submit-click timeout does not prove whether its request was
+    sent, navigation began, or authentication succeeded. Setup still stops.
+    """
+    from playwright.sync_api import Error as PlaywrightError
+    from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
+
+    if not isinstance(operation, str) or operation not in _LOGIN_OPERATIONS:
+        operation = "unclassified"
+    classes = (
+        (PlaywrightTimeoutError, "playwright_timeout_error"),
+        (PlaywrightError, "playwright_error"),
+        (TimeoutError, "timeout_error"),
+        (OSError, "os_error"),
+        (ValueError, "value_error"),
+        (TypeError, "type_error"),
+        (RuntimeError, "runtime_error"),
+    )
+    label = next((name for kind, name in classes if isinstance(exception, kind)), "unknown_error")
+    return f"setup_login_{operation}_{label}"
+
+
+def _submit_timeout_stage(exception):
+    """Discard a known driver's log after extracting only fixed progress labels.
+
+    This is diagnostic, not evidence of authentication or permission to retry.
+    Unknown/subclassed exceptions are never stringified. No matched line or
+    dynamic pointer description is returned, stored, or emitted.
+    """
+    from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
+
+    if type(exception) is not PlaywrightTimeoutError:
+        return "unknown"
+    lines = {re.sub(r"^\d+ ×\s*", "", line.strip().lstrip("- ")) for line in str(exception).splitlines()}
+    if {"click action done", "waiting for scheduled navigations to finish"} <= lines:
+        return "navigation_wait"
+    if any(line.endswith(" intercepts pointer events") for line in lines):
+        return "pointer_interception"
+    if "performing click action" in lines:
+        return "click_started"
+    if lines & {
+        "waiting for element to be visible, enabled and stable",
+        "element is not visible",
+        "element is not enabled",
+        "element is not stable",
+    }:
+        return "actionability_wait"
+    return "unknown"
 
 
 # innerText/is_visible alone include opacity-zero, clipped and covered panels.
@@ -79,7 +159,7 @@ def rendered_control(control):
     )
 
 
-def visible_star_point(png):
+def visible_star_point(png, *, excluded=(), anchor=(0.4, 0.55)):
     """Pick a small bright dot from rendered pixels, never a hidden star catalog.
 
     Deliberately excludes the header, edges and footer. No measurement-dependent
@@ -92,6 +172,30 @@ def visible_star_point(png):
     width, height = image.size
     if not 400 <= width <= 2400 or not 300 <= height <= 1800:
         raise SetupStop("setup_unsupported_starfield_size")
+    if (
+        not isinstance(anchor, (tuple, list))
+        or len(anchor) != 2
+        or any(type(v) not in {int, float} or not 0.15 <= v <= 0.85 for v in anchor)
+    ):
+        raise SetupStop("setup_invalid_starfield_anchor")
+    # Exclusions come from prior visible pixel selections in this unchanged
+    # viewport, never from a hidden catalog or an inferred scientific class.
+    if (
+        not isinstance(excluded, (list, tuple))
+        or len(excluded) > 500
+        or any(
+            not isinstance(point, dict)
+            or set(point) != {"x", "y", "width", "height"}
+            or point["width"] != width
+            or point["height"] != height
+            or any(
+                type(point[k]) not in {int, float} or not 0 <= point[k] < bound
+                for k, bound in (("x", width), ("y", height))
+            )
+            for point in excluded
+        )
+    ):
+        raise SetupStop("setup_invalid_star_exclusion")
     pixels = np.asarray(image, dtype=np.int16)
     # The real CSS-scale capture has dim 1–2px cores (none reached the old
     # 165/channel cutoff). Require local contrast as well as compact shape.
@@ -127,11 +231,17 @@ def visible_star_point(png):
             contrast = min(intensity[py, px] for px, py in cluster) - float(np.median(surrounding))
             if contrast >= 60:
                 candidates.append(((min(xs) + max(xs)) / 2, (min(ys) + max(ys)) / 2))
+    candidates = [
+        p
+        for p in candidates
+        if all((p[0] - old["x"]) ** 2 + (p[1] - old["y"]) ** 2 > 12**2 for old in excluded)
+    ]
     if not candidates:
         raise SetupStop("setup_no_visible_star_candidate")
     # Leave room above/right for the tooltip, away from sticky page headers.
     x, y = min(
-        candidates, key=lambda p: ((p[0] - width * 0.4) ** 2 + (p[1] - height * 0.55) ** 2, p[1], p[0])
+        candidates,
+        key=lambda p: ((p[0] - width * anchor[0]) ** 2 + (p[1] - height * anchor[1]) ** 2, p[1], p[0]),
     )
     return {"x": x, "y": y, "width": width, "height": height}
 
@@ -181,8 +291,26 @@ def visible_star_link(png, star):
     return candidates[0] if len(candidates) == 1 else None
 
 
+def numbered_tab(frame, number):
+    """Rendered numbered tab, including an unnamed image with visible AX text."""
+    if number not in {1, 2, 3}:
+        raise SetupStop("setup_unknown_numbered_tab")
+    snapshots = {f'- img "{number}"', f'- img: "{number}"'}
+    controls = [
+        e for e in frame.get_by_role("img").all() if e.is_visible() and e.aria_snapshot() in snapshots
+    ]
+    if len(controls) != 1 or not controls[0].is_enabled():
+        raise SetupStop("setup_ambiguous_or_unavailable_tab")
+    return controls[0]
+
+
 class BrowserSetup:
     MAX_SECONDS = 90
+    # A fresh public login page exposed Sign in before its known cookie dialog
+    # arrived about one second later. Let the UI settle cooperatively before
+    # credentials; this consumes the existing absolute setup budget.
+    LOGIN_UI_SETTLE_SECONDS = 1.5
+    LOGIN_UI_OCCLUSION_SECONDS = 3.0
     STARFIELD_WAIT_SECONDS = 30
     STARFIELD_POLL_SECONDS = 0.5
     # Observed 2026-09-24: intro -> instructions -> points -> warning -> simulation.
@@ -203,6 +331,12 @@ class BrowserSetup:
         self.stage = "opening_preview"
         self.visited = set()
         self.submitted_login = False
+        self.login_ui_since = None
+        self.login_occluded_since = None
+        self.login_credentials_started = False
+        self.login_cookie_closing = None
+        self.post_login_refresh_attempted = False
+        self.post_login_refresh_verified = False
         self.returned_to_preview = False
         self.stop_reason = None
         self.closed = False
@@ -216,6 +350,8 @@ class BrowserSetup:
         self.starfield_next_poll = 0.0
         self.starfield_candidate = None
         self.starfield_loading_recorded = False
+        self.excluded_star_points = ()
+        self.starfield_anchor = (0.4, 0.55)
         self.page.on("dialog", self._dialog)
         self.page.route("**/*", self._route)
 
@@ -281,9 +417,11 @@ class BrowserSetup:
     def _advance(self):
         self._guard()
         if self.page.url == self.login_url:
+            if self.post_login_refresh_attempted:
+                raise SetupStop("setup_authentication_lost_after_refresh")
             return self._login()
         if self.page.url == self.landing_url:
-            if self.returned_to_preview:
+            if self.returned_to_preview or self.post_login_refresh_attempted:
                 raise SetupStop("setup_preview_redirect_loop")
             self.returned_to_preview = True
             self._stage("returning_to_configured_preview")
@@ -297,6 +435,17 @@ class BrowserSetup:
             raise SetupStop("setup_unexpected_login_form")
         if any(x.is_visible() for x in self.page.get_by_role("dialog").all()):
             raise SetupStop("setup_unexpected_modal")
+        if self.submitted_login and not self.post_login_refresh_attempted:
+            return self._refresh_after_login()
+        if self.post_login_refresh_attempted:
+            # Toast text need not be an interactive hit target (nested spans or
+            # pointer-events:none). Inspect painted text, not control geometry.
+            if re.search(r"\bwelcome\s+back\b", rendered_text(self.page.main_frame), re.IGNORECASE):
+                raise SetupStop("setup_welcome_back_persisted_after_refresh")
+            if not self.post_login_refresh_verified:
+                self.post_login_refresh_verified = True
+                self._stage("post_login_refresh_verified")
+                return "waiting"
         frames = [
             f for f in self.page.frames if f.url == SIMULATION_URL and _visible_frame(f, self.page.main_frame)
         ]
@@ -329,36 +478,179 @@ class BrowserSetup:
         self._stage("waiting_for_preview_content")
         return "waiting"
 
+    def _refresh_after_login(self):
+        # Restart only the document, never its authenticated context. A new
+        # browser would discard the local preview attempt. This one-shot refresh
+        # consumes the login flash before any intro/star action or policy work.
+        if self.visited or self.star_clicked or self.view_clicked or self.stellar_tab_clicked:
+            raise SetupStop("setup_post_login_refresh_after_activity")
+        before = self.page.url
+        self.post_login_refresh_attempted = True
+        self._stage("refreshing_authenticated_preview")
+        self._guard()  # Callback cancellation, popup, boundary and original deadline.
+        if self.page.url != before:
+            raise SetupStop("setup_post_login_refresh_page_changed")
+        if any(x.is_visible() for x in self.page.locator('input[type="password"]').all()):
+            raise SetupStop("setup_unexpected_login_form")
+        if any(x.is_visible() for x in self.page.get_by_role("dialog").all()):
+            raise SetupStop("setup_unexpected_modal")
+        remaining_ms = int((self.MAX_SECONDS - (time.monotonic() - self.started)) * 1000)
+        if remaining_ms <= 0:
+            raise SetupStop("setup_time_limit")
+        try:
+            self.page.reload(wait_until="domcontentloaded", timeout=min(10000, remaining_ms))
+        except Exception:  # noqa: BLE001 - no driver logs, authentication state or retries
+            raise SetupStop("setup_post_login_refresh_failed") from None
+        self._guard()
+        if self.page.url == self.login_url:
+            raise SetupStop("setup_authentication_lost_after_refresh")
+        if not self.config.allows(self.page.url):
+            raise SetupStop("setup_post_login_refresh_outside_preview")
+        # Verification is a separate scheduled read before intro/star actions.
+        return "waiting"
+
     def _login(self):
+        # Diagnostic tags identify only the operation being attempted. No
+        # authentication-page capture, input readback or driver log is added.
+        self._login_operation = "inspect_cookie_preferences"
+        try:
+            return self._login_native()
+        except SetupStop:
+            raise
+        except Exception as exc:  # noqa: BLE001 - never expose credential-bearing driver text
+            reason = _login_failure_code(self._login_operation, exc)
+            if reason == "setup_login_submit_click_playwright_timeout_error":
+                reason += f"_at_{self._login_location()}_{_submit_timeout_stage(exc)}"
+            raise SetupStop(reason) from None
+        finally:
+            self._login_operation = None
+
+    def _login_location(self):
+        # Only a fixed category escapes; do not snapshot the authentication page
+        # or record its URL, query, inputs, DOM, screenshot, or page title.
+        try:
+            current = self.page.url
+            if current == self.login_url:
+                return "login"
+            if current == self.landing_url:
+                return "landing"
+            return "preview" if self.config.allows(current) else "outside"
+        except Exception:  # noqa: BLE001 - a diagnostic read must not replace the original stop
+            return "unavailable"
+
+    def _close_login_cookie(self):
         # The native sign-in form and cookie notice were inspected through the UI.
+        if self.login_cookie_closing is not None:
+            pending = self.login_cookie_closing
+            self._login_operation = "inspect_cookie_" + pending["kind"]
+            self._guard()
+            for dialog in self.page.get_by_role("dialog").all():
+                if dialog.is_visible() and not any(
+                    dialog.evaluate("(e, original) => e === original", handle)
+                    for handle in pending["dialogs"]
+                ):
+                    raise SetupStop("setup_unexpected_modal")
+            # Retain the actual known notice node across its dismissal animation.
+            # A replacement notice is not authority for another Close click.
+            candidates = self.page.get_by_role(
+                "dialog" if pending["kind"] == "preferences" else "heading",
+                name="Cookie Preferences" if pending["kind"] == "preferences" else "We use cookies",
+                exact=True,
+            )
+            visible = [item for item in candidates.all() if item.is_visible()]
+            if len(visible) > 1 or (
+                visible and not visible[0].evaluate("(e, original) => e === original", pending["notice"])
+            ):
+                raise SetupStop("setup_cookie_notice_changed_during_close")
+            if time.monotonic() >= pending["deadline"]:
+                raise SetupStop("setup_cookie_notice_close_unresolved")
+            if pending["notice"].is_visible():
+                return True
+            self.login_cookie_closing = None
+            return False
+        self._login_operation = "inspect_cookie_preferences"
         preferences = self.page.get_by_role("dialog", name="Cookie Preferences", exact=True)
         if any(x.is_visible() for x in preferences.all()):
-            self._one(self._one(preferences).get_by_role("button", name="Close", exact=True)).click(
-                timeout=3000
-            )
+            self._login_operation = "close_cookie_preferences"
+            self._guard()
+            notice = self._one(preferences)
+            close = self._one(notice.get_by_role("button", name="Close", exact=True))
+            close_handle = self._begin_cookie_close(notice, "preferences", close)
+            close_handle.click(timeout=3000)
+            self.login_ui_since = None
             self._stage("cookie_notice_closed")
-            return "waiting"
+            return True
+        self._login_operation = "inspect_cookie_notice"
         cookie = self.page.get_by_role("heading", name="We use cookies", exact=True)
         if any(x.is_visible() for x in cookie.all()):
             # Scope Close to the visible cookie container, not the authentication alert.
+            self._login_operation = "close_cookie_notice"
             container = self._one(cookie)
+            notice = container
             for _ in range(3):
                 container = container.locator("..")
                 buttons = container.get_by_role("button", name="Close", exact=True)
                 if buttons.count() == 1:
-                    self._one(buttons).click(timeout=3000)
+                    self._guard()
+                    close = self._one(buttons)
+                    close_handle = self._begin_cookie_close(notice, "notice", close)
+                    close_handle.click(timeout=3000)
                     break
             else:
                 raise SetupStop("setup_cookie_notice_needs_manual_close")
+            self.login_ui_since = None
             self._stage("cookie_notice_closed")
-            return "waiting"
+            return True
+        return False
+
+    def _begin_cookie_close(self, notice, kind, close):
+        handle = notice.element_handle(timeout=3000)
+        close_handle = close.element_handle(timeout=3000)
+        if (
+            handle is None
+            or close_handle is None
+            or not notice.evaluate("(e, original) => e === original", handle)
+            or not close.evaluate("(e, original) => e === original", close_handle)
+        ):
+            raise SetupStop("setup_cookie_notice_changed_before_close")
+        dialogs = []
+        for dialog in self.page.get_by_role("dialog").all():
+            if not dialog.is_visible():
+                continue
+            original = dialog.element_handle(timeout=3000)
+            if original is None or not dialog.evaluate(
+                "(e, notice) => e === notice || e.contains(notice)", handle
+            ):
+                raise SetupStop("setup_unexpected_modal")
+            if not dialog.evaluate("(e, original) => e === original", original):
+                raise SetupStop("setup_cookie_notice_changed_before_close")
+            dialogs.append(original)
+        self._guard()
+        self.login_cookie_closing = {
+            "kind": kind,
+            "notice": handle,
+            "dialogs": dialogs,
+            "deadline": time.monotonic() + self.LOGIN_UI_OCCLUSION_SECONDS,
+        }
+        return close_handle
+
+    def _login_modal_guard(self):
+        self._login_operation = "inspect_modal"
         if any(x.is_visible() for x in self.page.get_by_role("dialog").all()):
             raise SetupStop("setup_unexpected_modal")
+
+    def _login_native(self):
+        if self._close_login_cookie():
+            return "waiting"
+        self._login_modal_guard()
         if self.submitted_login:
             self._stage("waiting_for_login_result")
             return "waiting"  # Single submission only; deadline covers bad credentials.
+        self._login_operation = "locate_email"
         email = self._one(self.page.get_by_placeholder("Email", exact=True))
+        self._login_operation = "locate_password"
         password = self._one(self.page.get_by_placeholder("Password", exact=True))
+        self._login_operation = "locate_submit"
         submit = self._one(self.page.get_by_role("button", name="Sign in", exact=True))
 
         # Inspect form destinations, not hidden CSRF fields or input values.
@@ -373,15 +665,77 @@ class BrowserSetup:
             if submit.get_attribute("formaction") or submit.get_attribute("formmethod"):
                 raise SetupStop("setup_untrusted_login_form")
 
+        self._login_operation = "validate_form_initial"
         validate_form()
+        self._login_operation = "inspect_field_types"
         if password.get_attribute("type") != "password" or email.get_attribute("type") != "email":
             raise SetupStop("setup_unexpected_login_fields")
+
+        def exposed():
+            self._login_operation = "inspect_login_exposure"
+            self._guard()
+            if not all(rendered_control(control) for control in (email, password, submit)):
+                # A known cookie can appear during the read. Only its ordinary
+                # Close control is permitted; unknown overlays remain a stop.
+                if self._close_login_cookie():
+                    return False
+                self._login_modal_guard()
+                if self.login_credentials_started:
+                    raise SetupStop("setup_login_control_not_exposed")
+                # The observed cookie backdrop paints before its heading/modal
+                # appears. Waiting is read-only and never authorizes an unknown
+                # overlay action; persistent cover stops within this fixed bound.
+                if self.login_occluded_since is None:
+                    self.login_occluded_since = time.monotonic()
+                if time.monotonic() - self.login_occluded_since >= self.LOGIN_UI_OCCLUSION_SECONDS:
+                    raise SetupStop("setup_login_control_not_exposed")
+                self.login_ui_since = None
+                self._stage("waiting_for_login_ui")
+                self._guard()
+                return False
+            self.login_occluded_since = None
+            return True
+
+        def ready_for_write():
+            self._guard()
+            if self._close_login_cookie():
+                return False
+            self._login_modal_guard()
+            return exposed()
+
+        if not exposed():
+            return "waiting"
+        if self.login_ui_since is None:
+            self.login_ui_since = time.monotonic()
+        if time.monotonic() - self.login_ui_since < self.LOGIN_UI_SETTLE_SECONDS:
+            self._login_operation = "waiting_for_login_ui_callback"
+            self._stage("waiting_for_login_ui")
+            self._guard()
+            return "waiting"
+        self._login_operation = "signing_in_callback"
         self._stage("signing_in")
+        if not ready_for_write():
+            return "waiting"
+        self._login_operation = "validate_form_before_email"
         validate_form()
+        self._login_operation = "fill_email"
+        self.login_credentials_started = True
         email.fill(self._email, timeout=3000)
+        self._login_operation = "validate_form_after_email"
         validate_form()
+        if not ready_for_write():
+            return "waiting"
+        self._login_operation = "fill_password"
         password.fill(self._password, timeout=3000)
+        self._login_operation = "validate_form_after_password"
         validate_form()
+        # Filling and form validation may span arrival of a late cookie panel.
+        # A pre-dispatch dismissal is a separate tick, never a submit retry.
+        if not ready_for_write():
+            return "waiting"
+        self._login_operation = "validate_form_before_submit"
+        validate_form()
+        self._login_operation = "submit_click"
         submit.click(timeout=3000)
         self.submitted_login = True
         self._email = self._password = ""
@@ -399,7 +753,7 @@ class BrowserSetup:
         if self.view_clicked:
             # VIEW STAR DATA may retain another tab. The visible tab image is 1.
             if not self.stellar_tab_clicked and ("OBSERVE FOR" in upper or "TERRESTRIAL" in upper):
-                self._one(frame.get_by_role("img", name="1", exact=True)).click(timeout=3000)
+                numbered_tab(frame, 1).click(timeout=3000)
                 self.stellar_tab_clicked = True
                 self.ready_signature = None
                 self._stage("opening_stellar_tab")
@@ -414,11 +768,14 @@ class BrowserSetup:
             return "waiting"
         if self.star_clicked:
             handle = frame.frame_element()
-            png = handle.screenshot(timeout=5000, scale="css")
+            png = evidence_screenshot(handle, timeout=5000, scale="css")
             link = visible_star_link(png, self.star_point)
             if link:
                 self._guard()
-                if visible_star_link(handle.screenshot(timeout=5000, scale="css"), self.star_point) != link:
+                if (
+                    visible_star_link(evidence_screenshot(handle, timeout=5000, scale="css"), self.star_point)
+                    != link
+                ):
                     raise SetupStop("setup_starfield_changed")
                 self._record_pixels("setup-star-link.png", png, link)
                 self._stage("opening_star_data")
@@ -442,13 +799,13 @@ class BrowserSetup:
         self.starfield_next_poll = now + self.STARFIELD_POLL_SECONDS
         handle = frame.frame_element()
         handle.hover(timeout=3000)
-        png = handle.screenshot(timeout=5000, scale="css")
+        png = evidence_screenshot(handle, timeout=5000, scale="css")
         self._guard()
         if time.monotonic() - self.starfield_started >= self.STARFIELD_WAIT_SECONDS:
             self._record_pixels("setup-starfield-rejected.png", png, None)
             raise SetupStop("setup_starfield_render_timeout")
         try:
-            point = visible_star_point(png)
+            point = visible_star_point(png, excluded=self.excluded_star_points, anchor=self.starfield_anchor)
         except SetupStop as exc:
             if str(exc) == "setup_no_visible_star_candidate":
                 self.starfield_candidate = None

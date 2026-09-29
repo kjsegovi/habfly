@@ -22,6 +22,14 @@ DEFAULT_PACK = Path(__file__).parent / "packs" / "stellar_knowledge.json"
 STAR_CLASSES = ("main_sequence", "white_dwarf", "giant")
 
 
+def finite_number(value):
+    """Reject booleans and integers too large for the bounded float evaluator."""
+    try:
+        return type(value) in {int, float} and math.isfinite(value)
+    except OverflowError:
+        return False
+
+
 class KnowledgeInput(Contract):
     quantity: str
     unit: str
@@ -207,7 +215,7 @@ class LocalCalculator:
             if not isinstance(binding, dict):
                 return fail("invalid_binding")
             value = binding.get("value")
-            if type(value) not in {int, float} or not math.isfinite(value):
+            if not finite_number(value):
                 return fail("input_not_finite_number")
             if binding.get("unit") != spec.unit:
                 return fail("incompatible_unit")

@@ -22,6 +22,7 @@ from habfly.browser_stellar import SIMULATION_URL
 from habfly.runtime import RunOptions
 
 LOGIN = "http://localhost/authors/log_in"
+LANDING = "http://localhost/workspaces/course_author"
 EMAIL, PASSWORD = "fixture-user@example.invalid", "fixture-only-secret"
 
 
@@ -57,6 +58,33 @@ def test_css_scale_dim_two_pixel_stars_require_local_contrast():
     draw.rectangle((405, 305, 406, 305), fill=(120, 120, 120))  # insufficient contrast
     draw.point((300, 280), fill="white")  # isolated noise
     assert visible_star_point(png(image)) == {"x": 200.5, "y": 220.0, "width": 800, "height": 500}
+
+
+def test_visible_star_exclusions_are_viewport_bound_and_never_change_default_selection():
+    image = Image.new("RGB", (800, 500), "#081020")
+    draw = ImageDraw.Draw(image)
+    draw.rectangle((200, 220, 205, 225), fill="white")
+    draw.rectangle((700, 400, 705, 405), fill="white")
+    raw = png(image)
+    first = visible_star_point(raw)
+    second = visible_star_point(raw, excluded=[first])
+    assert first["x"] == 202.5 and second["x"] == 702.5
+    assert visible_star_point(raw) == first
+    assert visible_star_point(raw, anchor=(0.85, 0.8)) == second
+    assert visible_star_point(raw, anchor=(0.85, 0.8), excluded=[second]) == first
+    for bad_anchor in ((0, 0.5), (0.5, 1), (True, 0.5), (0.5, float("nan")), (0.5,), None):
+        with pytest.raises(SetupStop, match="invalid_starfield_anchor"):
+            visible_star_point(raw, anchor=bad_anchor)
+    with pytest.raises(SetupStop, match="no_visible_star_candidate"):
+        visible_star_point(raw, excluded=[first, second])
+    for bad in (
+        {**first, "width": 950},
+        {**first, "x": float("nan")},
+        {**first, "x": True},
+        {"x": 200, "y": 220},
+    ):
+        with pytest.raises(SetupStop, match="invalid_star_exclusion"):
+            visible_star_point(raw, excluded=[bad])
 
 
 def test_credentials_consumed_without_exception_values(monkeypatch):
@@ -124,6 +152,9 @@ def setup_page(chromium, monkeypatch):  # noqa: F811
     # Keep normal fixture transitions fast; the polling test below explicitly
     # restores the production interval and advances a module-local fake clock.
     monkeypatch.setattr(BrowserSetup, "STARFIELD_POLL_SECONDS", 0)
+    # The late-cookie tests restore the production interval explicitly. Other
+    # fixtures exercise their own transitions without real-time settling waits.
+    monkeypatch.setattr(BrowserSetup, "LOGIN_UI_SETTLE_SECONDS", 0)
     context = chromium.new_context()
     state = {
         "authenticated": False,
@@ -131,6 +162,11 @@ def setup_page(chromium, monkeypatch):  # noqa: F811
         "bad_login": False,
         "canvas": canvas_html(),
         "login_extra": "",
+        "preview_loads": 0,
+        "welcome_back": "Welcome back!",
+        "persist_welcome": False,
+        "logout_on_refresh": False,
+        "landing_after_login": False,
     }
     simulation = (
         f'<iframe style="width:800px;height:500px;border:0" src="{SIMULATION_URL}"></iframe>'
@@ -153,7 +189,21 @@ def setup_page(chromium, monkeypatch):  # noqa: F811
                     content_type="text/html", body=f"<script>location.replace({json.dumps(LOGIN)})</script>"
                 )
             else:
-                request_route.fulfill(content_type="text/html", body=intro)
+                state["preview_loads"] += 1
+                if state["logout_on_refresh"] and state["preview_loads"] == 2:
+                    state["authenticated"] = False
+                    request_route.fulfill(status=302, headers={"location": LOGIN})
+                    return
+                welcome = (
+                    f'<div role="alert">{state["welcome_back"]}</div>'
+                    if state["posts"] and (state["preview_loads"] == 1 or state["persist_welcome"])
+                    else ""
+                )
+                request_route.fulfill(
+                    content_type="text/html", body=intro.replace("<body>", "<body>" + welcome)
+                )
+        elif request.url == LANDING:
+            request_route.fulfill(content_type="text/html", body="<h1>Author workspace</h1>")
         elif request.url == LOGIN:
             if request.method == "POST":
                 state["posts"] += 1
@@ -161,7 +211,7 @@ def setup_page(chromium, monkeypatch):  # noqa: F811
                     state["authenticated"] = True
                     request_route.fulfill(
                         content_type="text/html",
-                        body=f"<script>location.replace({json.dumps(OUTER)})</script>",
+                        body=f"<script>location.replace({json.dumps(LANDING if state['landing_after_login'] else OUTER)})</script>",
                     )
                     return
             request_route.fulfill(
@@ -219,6 +269,7 @@ def test_login_intro_star_stellar_no_answers_or_protected_actions(setup_page, tm
     finish(setup)
     assert setup.closed and setup.stage == "stellar_screen_ready"
     assert setup.visited == {0, 1, 2, 3} and state["posts"] == 1
+    assert setup.post_login_refresh_verified and state["preview_loads"] == 2
     assert setup._email == setup._password == ""
     frame = next(f for f in page.frames if f.url == SIMULATION_URL)
     assert all(
@@ -258,6 +309,7 @@ def test_wrong_login_only_submits_once_and_times_out(setup_page, tmp_path):
     for _ in range(5):
         setup.advance()
     assert state["posts"] == 1
+    assert not setup.post_login_refresh_attempted and state["preview_loads"] == 0
     setup.started = time.monotonic() - setup.MAX_SECONDS - 1
     with pytest.raises(SetupStop, match="setup_time_limit"):
         setup.advance()
@@ -338,9 +390,9 @@ def test_delayed_starfield_waits_and_polls_without_clicking_then_requires_stabil
     reads = []
     original = module.visible_star_point
 
-    def detect(pixels):
+    def detect(pixels, **kwargs):
         reads.append(clock[0])
-        return original(pixels)
+        return original(pixels, **kwargs)
 
     monkeypatch.setattr(module, "visible_star_point", detect)
     page, state = setup_page

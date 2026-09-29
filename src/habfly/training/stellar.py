@@ -46,11 +46,12 @@ def record_episode(env, seed, policy=None, *, event_path=None):
     """Stream replay events even when a transport fails part-way through a run."""
     stream = event_path.open("x") if event_path else None
     sequence = 0
+    task = getattr(env, "task_name", "stellar")
 
     def emit(event, payload):
         nonlocal sequence
         if stream:
-            item = RuntimeEvent(event=event, sequence=sequence, run_id=f"stellar-{seed}", payload=payload)
+            item = RuntimeEvent(event=event, sequence=sequence, run_id=f"{task}-{seed}", payload=payload)
             stream.write(item.model_dump_json() + "\n")
             stream.flush()
         sequence += 1
@@ -62,7 +63,7 @@ def record_episode(env, seed, policy=None, *, event_path=None):
             "hello",
             {
                 "protocol_version": 1,
-                "task": "stellar",
+                "task": task,
                 "calculation_mode": "local_tool_assisted"
                 if isinstance(env.adapter, LocalCalculator)
                 else "google_sheets",
@@ -72,7 +73,7 @@ def record_episode(env, seed, policy=None, *, event_path=None):
         emit(
             "state",
             {
-                "stage": "stellar",
+                "stage": task,
                 "seed": seed,
                 "status": "running",
                 "browser_status": "not_connected",
@@ -92,13 +93,16 @@ def record_episode(env, seed, policy=None, *, event_path=None):
             else:
                 with torch.no_grad():
                     action, state, diagnostics = policy.act(Observation.model_validate(obs), state)
-            emit(
-                "action_proposed",
-                {
-                    **action.model_dump(mode="json"),
-                    "action_source": "checkpoint" if policy else "scripted_expert",
-                },
-            )
+            proposed = {
+                **action.model_dump(mode="json"),
+                "action_source": "checkpoint" if policy else "scripted_expert",
+            }
+            if task in {"planet_calculations", "habitability_calculations"} and policy is not None:
+                proposed["calibration_scope"] = policy.calibration.get("scope", "uncalibrated")
+                proposed["calibration"] = policy.calibration
+                if diagnostics:
+                    diagnostics["activity_source"] = "checkpoint"
+            emit("action_proposed", proposed)
             if diagnostics:
                 emit("neural_activity", diagnostics)
             following, _, done, truncated, info = env.step(action)
